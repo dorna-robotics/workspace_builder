@@ -3669,14 +3669,23 @@ async function openCreatePanel(typeName) {
 	  }
 
 	  function __getAnchorsForObj(obj, preferredSolid=null) {
-	    const ud = obj?.userData || {};
-	    const ab = (ud.anchorsBySolid && typeof ud.anchorsBySolid === "object") ? ud.anchorsBySolid : null;
-	    // If legacy anchors exist, use them (single-solid components).
-	    if (ud.anchors && typeof ud.anchors === "object" && Object.keys(ud.anchors).length) return ud.anchors;
-	    if (!ab) return {};
-	    const solid = __resolveSolidKey(obj, preferredSolid);
-	    return (solid && ab[solid]) ? ab[solid] : {};
-	  }
+    const ud = obj?.userData || {};
+    const ab = (ud.anchorsBySolid && typeof ud.anchorsBySolid === "object") ? ud.anchorsBySolid : null;
+    // If UI selected a solid, use that solid's anchors even if ud.anchors exists.
+    if (preferredSolid && ab) {
+      if (ab[preferredSolid]) return ab[preferredSolid];
+      const want = String(preferredSolid).toLowerCase();
+      const keys = Object.keys(ab);
+      const exactCI = keys.find(k => String(k).toLowerCase() === want);
+      if (exactCI && ab[exactCI]) return ab[exactCI];
+      const contains = keys.find(k => String(k).toLowerCase().includes(want) || want.includes(String(k).toLowerCase()));
+      if (contains && ab[contains]) return ab[contains];
+    }
+    if (ud.anchors && typeof ud.anchors === "object" && Object.keys(ud.anchors).length) return ud.anchors;
+    if (!ab) return {};
+    const solid = (ud.solidName && ab[ud.solidName]) ? ud.solidName : (ab["solid_0"] ? "solid_0" : Object.keys(ab)[0]);
+    return (solid && ab[solid]) ? ab[solid] : {};
+  }
 
 
   const childAnchors = __getAnchorsForObj(childObj, window.builderState.pending.childSolid);
