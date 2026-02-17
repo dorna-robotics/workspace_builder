@@ -72,6 +72,9 @@ def _ensure_builder_stubs():
         class Planner:  # minimal interface used by core; safe no-op
             def __init__(self, *a, **k):
                 pass
+            def update(self, *a, **k):
+                # Core calls planner.update(...) during init.
+                return None
             def check_collision(self, *a, **k):
                 return []
         pp_mod.Planner = Planner
