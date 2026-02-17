@@ -3516,6 +3516,79 @@ async function openCreatePanel(typeName) {
     }
   }
 
+  // -------- Core extra parameters (beyond basic bool toggles) --------
+  // Core is special: it has several important config fields that users need to set.
+  // We keep these strictly builder-side (no Workspace changes).
+  const extra = {};
+  if (String(typeName).toLowerCase() === "core") {
+    // Helpers for consistent UI blocks
+    function _mkFieldBlock(labelText, inputEl) {
+      const wrap = document.createElement("div");
+      wrap.style.display = "flex";
+      wrap.style.alignItems = "center";
+      wrap.style.justifyContent = "space-between";
+      wrap.style.gap = "10px";
+      wrap.style.border = "1px solid rgba(0,0,0,0.08)";
+      wrap.style.borderRadius = "12px";
+      wrap.style.padding = "10px 12px";
+      wrap.style.background = "#fafafa";
+
+      const lab = document.createElement("div");
+      lab.textContent = labelText;
+      lab.style.fontSize = "13px";
+      lab.style.fontWeight = "650";
+      lab.style.opacity = "0.9";
+
+      wrap.appendChild(lab);
+      wrap.appendChild(inputEl);
+      return wrap;
+    }
+
+    // Robot IP
+    const ip = document.createElement("input");
+    ip.type = "text";
+    ip.placeholder = "e.g. 192.168.1.50 (leave blank for simulation)";
+    ip.value = "";
+    ip.style.flex = "1";
+    ip.style.padding = "8px 10px";
+    ip.style.borderRadius = "10px";
+    ip.style.border = "1px solid rgba(0,0,0,0.12)";
+    ip.style.background = "#fff";
+    extra.ip = ip;
+    form.appendChild(_mkFieldBlock("Robot IP", ip));
+
+    // Camera serial number (shown only if has_camera is checked)
+    const camSerial = document.createElement("input");
+    camSerial.type = "text";
+    camSerial.placeholder = "e.g. Intel RealSense serial";
+    camSerial.value = "";
+    camSerial.style.flex = "1";
+    camSerial.style.padding = "8px 10px";
+    camSerial.style.borderRadius = "10px";
+    camSerial.style.border = "1px solid rgba(0,0,0,0.12)";
+    camSerial.style.background = "#fff";
+    extra.camera_serial_number = camSerial;
+    const camBlock = _mkFieldBlock("Camera serial #", camSerial);
+    form.appendChild(camBlock);
+
+    // Wiring: show/hide & enable/disable based on bool toggles (if present)
+    function _hasBool(name) {
+      const f = fields && fields[name] && fields[name].input;
+      return (f && f.type === "checkbox") ? f : null;
+    }
+    const hasCam = _hasBool("has_camera");
+
+    function syncCoreExtrasUI() {
+      try {
+        const camOn = hasCam ? !!hasCam.checked : false;
+        camBlock.style.display = camOn ? "flex" : "none";
+      } catch (e) {}
+    }
+
+    if (hasCam) hasCam.addEventListener("change", syncCoreExtrasUI);
+    syncCoreExtrasUI();
+  }
+
   // preview (async, don't block UI)
   const prev = document.createElement("div");
   prev.style.border = "1px solid rgba(0,0,0,0.08)";
@@ -3576,6 +3649,22 @@ async function openCreatePanel(typeName) {
       // Only boolean/toggle options are exposed in Builder
       if (opt && opt.kind === "bool") optsOut[k] = !!input.checked;
     }
+
+    // Core: include additional parameters
+    if (String(typeName).toLowerCase() === "core") {
+      try {
+        if (extra.ip) optsOut.ip = String(extra.ip.value || "").trim();
+      } catch (e) {}
+
+      // camera_serial_number only if has_camera true
+      try {
+        const camOn = !!optsOut.has_camera;
+        if (camOn && extra.camera_serial_number) {
+          optsOut.camera_serial_number = String(extra.camera_serial_number.value || "").trim();
+        }
+      } catch (e) {}
+    }
+
     panel.remove();
     try { await spawnComponent(typeName, meta, optsOut); }
     catch (e) { console.error(e); showToast("Create failed: " + (e?.message||e)); }
