@@ -2324,7 +2324,8 @@ function openChildAnchorMenu(childName, anchorsBySolid) {
       // Lock primary selection to the child being jointed.
       try { setSelected(childName); } catch(e) {}
       try { closeAnchorPickPanel(); } catch(e) {}
-      showToast("Click a target object (or use the list), then choose its anchor.");
+      try { openTargetObjectPickPanel(childName); } catch(e) {}
+      showToast("Choose a target object (click in 3D or use the list), then choose its anchor.");
     },
     onCancel: () => cancelUnanchoredSpawn(),
   });
@@ -2383,6 +2384,179 @@ function openTargetAnchorMenu(targetName) {
     }
   });
 }
+
+// =====================
+// Target-object picker (searchable list)
+// =====================
+function closeTargetObjectPickPanel() {
+  const el = document.getElementById("targetObjectPickPanel");
+  if (el) el.remove();
+}
+
+function __collectDescendants(rootName) {
+  const out = new Set();
+  const q = [rootName];
+  while (q.length) {
+    const cur = q.pop();
+    for (const [n, meta] of Object.entries(window.builderState.components || {})) {
+      if (!n || out.has(n) || n === rootName) continue;
+      const at = meta?.attach || (objectsByName.get(n)?.userData?.builderAttach) || null;
+      if (at?.parent_name === cur) {
+        out.add(n);
+        q.push(n);
+      }
+    }
+  }
+  return out;
+}
+
+function openTargetObjectPickPanel(childName) {
+  closeTargetObjectPickPanel();
+  const panel = document.createElement("div");
+  panel.id = "targetObjectPickPanel";
+  panel.style.position = "fixed";
+  panel.style.right = "18px";
+  panel.style.top = "18px";
+  panel.style.width = "360px";
+  panel.style.maxHeight = "85vh";
+  panel.style.overflow = "hidden";
+  panel.style.background = "rgba(255,255,255,0.96)";
+  panel.style.border = "1px solid rgba(0,0,0,0.12)";
+  panel.style.borderRadius = "16px";
+  panel.style.boxShadow = "0 18px 60px rgba(0,0,0,0.18)";
+  panel.style.padding = "14px";
+  panel.style.zIndex = "10005";
+  panel.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif";
+  panel.style.color = "#111";
+
+  const title = document.createElement("div");
+  title.textContent = "Choose target object";
+  title.style.fontWeight = "800";
+  title.style.fontSize = "16px";
+  title.style.marginBottom = "6px";
+  panel.appendChild(title);
+
+  const sub = document.createElement("div");
+  sub.textContent = "Pick what to attach to (you can also click a target object in 3D).";
+  sub.style.fontSize = "12px";
+  sub.style.opacity = "0.75";
+  sub.style.marginBottom = "10px";
+  panel.appendChild(sub);
+
+  const search = document.createElement("input");
+  search.type = "text";
+  search.placeholder = "Search objects…";
+  search.style.width = "100%";
+  search.style.boxSizing = "border-box";
+  search.style.padding = "10px 10px";
+  search.style.borderRadius = "12px";
+  search.style.border = "1px solid rgba(0,0,0,0.18)";
+  search.style.marginBottom = "10px";
+  panel.appendChild(search);
+
+  const list = document.createElement("div");
+  list.style.maxHeight = "55vh";
+  list.style.overflow = "auto";
+  list.style.border = "1px solid rgba(0,0,0,0.10)";
+  list.style.borderRadius = "12px";
+  list.style.background = "rgba(0,0,0,0.02)";
+  panel.appendChild(list);
+
+  const blocked = __collectDescendants(childName);
+  blocked.add(childName);
+
+  function getCandidates() {
+    const names = Object.keys(window.builderState.components || {});
+    const out = names.filter(n => n && !blocked.has(n) && objectsByName.get(n));
+    out.sort((a,b)=>a.localeCompare(b, undefined, {numeric:true}));
+    return out;
+  }
+
+  function render() {
+    list.innerHTML = "";
+    const all = getCandidates();
+    const q = (search.value || "").trim().toLowerCase();
+    const shown = q ? all.filter(n => n.toLowerCase().includes(q)) : all;
+    if (!shown.length) {
+      const none = document.createElement("div");
+      none.textContent = "No matching objects.";
+      none.style.padding = "10px";
+      none.style.fontSize = "12px";
+      none.style.opacity = "0.7";
+      list.appendChild(none);
+      return;
+    }
+    for (const n of shown) {
+      const item = document.createElement("div");
+      item.textContent = n;
+      item.style.padding = "10px 10px";
+      item.style.cursor = "pointer";
+      item.style.userSelect = "none";
+      item.style.fontSize = "12px";
+      item.style.borderBottom = "1px solid rgba(0,0,0,0.06)";
+      item.onmouseenter = () => item.style.background = "rgba(90,160,255,0.10)";
+      item.onmouseleave = () => item.style.background = "transparent";
+      item.onclick = () => {
+        try {
+          window.builderState.targetName = n;
+          window.builderState.mode = "PICK_TARGET_ANCHOR";
+          closeTargetObjectPickPanel();
+          openTargetAnchorMenu(n);
+          showToast("Pick a target anchor (click in 3D or use the list)." );
+        } catch(e) { console.error(e); }
+      };
+      list.appendChild(item);
+    }
+  }
+
+  search.addEventListener("input", () => render());
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      try {
+        window.builderState.pending = null;
+        window.builderState.targetName = null;
+        window.builderState.mode = "IDLE";
+        try { clearAnchors(); } catch(_) {}
+        try { hideBanner(); } catch(_) {}
+      } catch(_) {}
+      closeTargetObjectPickPanel();
+      return;
+    }
+  });
+
+  const bottom = document.createElement("div");
+  bottom.style.display = "flex";
+  bottom.style.justifyContent = "flex-end";
+  bottom.style.gap = "8px";
+  bottom.style.marginTop = "10px";
+
+  const cancel = document.createElement("button");
+  cancel.textContent = "Cancel";
+  cancel.style.padding = "10px 14px";
+  cancel.style.borderRadius = "12px";
+  cancel.style.border = "1px solid rgba(0,0,0,0.12)";
+  cancel.style.background = "#fff";
+  cancel.style.fontWeight = "800";
+  cancel.style.cursor = "pointer";
+  cancel.onclick = () => {
+    try {
+      window.builderState.pending = null;
+      window.builderState.targetName = null;
+      window.builderState.mode = "IDLE";
+      try { clearAnchors(); } catch(_) {}
+      try { hideBanner(); } catch(_) {}
+    } catch(_) {}
+    closeTargetObjectPickPanel();
+  };
+  bottom.appendChild(cancel);
+  panel.appendChild(bottom);
+
+  document.body.appendChild(panel);
+  render();
+  setTimeout(() => { try { search.focus(); search.select(); } catch(_) {} }, 0);
+}
+
 
 function placePlateRelative(name, spec, lastName, dx, dy) {
   // place pose relative by offsetting from last plate pose
@@ -3002,31 +3176,49 @@ function moveSelected() {
   const obj = objectsByName.get(name);
   if (!obj) return;
 
-  const anchors = obj.userData?.anchors || {};
-  const keys = Object.keys(anchors);
-  if (!keys.length) {
+  const meta = window.builderState.components?.[name] || {};
+  const type = meta.type || obj.userData?.typeName || obj.userData?.type || "unknown";
+
+  // Prefer full anchorsBySolid (multi-solid components like toolchanger/grippers),
+  // fall back to legacy obj.userData.anchors.
+  const ab = (obj.userData?.anchorsBySolid && typeof obj.userData.anchorsBySolid === "object") ? obj.userData.anchorsBySolid : null;
+  const solids = ab ? Object.keys(ab) : [obj.userData?.solidName || "solid_0"];
+  let currentSolid = (obj.userData?.solidName && solids.includes(obj.userData.solidName)) ? obj.userData.solidName : (solids[0] || null);
+
+  const getAnchorsForSolid = (solidKey) => {
+    if (ab && solidKey && ab[solidKey]) return ab[solidKey];
+    return obj.userData?.anchors || {};
+  };
+
+  const hasAny = solids.some(s => Object.keys(getAnchorsForSolid(s) || {}).length);
+  if (!hasAny) {
     showToast("No anchors available on " + name);
     return;
   }
-  keys.sort();
 
-  openModal("Move: choose source anchor", keys.map(k => ({
-    label: k,
-    onClick: () => {
-      const meta = window.builderState.components[name] || {};
-      const type = meta.type || obj.userData?.type || "unknown";
-      const childSolid =
-        (type === "fixture_plate") ? "fixture_plate" :
-        (type === "tool_rack") ? "tool_rack" :
-        (type === "core") ? "rail_base" :
-        "solid_0";
-
-      window.builderState.pending = { name, type, sourceAnchor: k, childSolid, op: "move" };
+  openAnchorPickPanel({
+    panelId: "anchorPickPanel",
+    title: `Move: anchors on ${name}`,
+    subtitle: "Pick the source anchor on the object you want to move. Then pick the target object + target anchor.",
+    solids,
+    getCurrentSolid: () => currentSolid,
+    setCurrentSolid: (s) => { currentSolid = s; },
+    getAnchorNames: (solidKey) => Object.keys(getAnchorsForSolid(solidKey) || {}),
+    onPick: (anchorName) => {
+      // Keep the child anchored solid explicit (fixes tool/toolchanger/gripper cases).
+      window.builderState.pending = { name, type, sourceAnchor: anchorName, childSolid: currentSolid, op: "move" };
       window.builderState.mode = "PICK_TARGET_OBJECT";
       window.builderState.targetName = null;
-      showToast("Click the target object, then click its anchor.");
+      try { closeAnchorPickPanel(); } catch(e) {}
+      try { openTargetObjectPickPanel(name); } catch(e) {}
+      showToast("Choose a target object (click in 3D or use the list), then choose its anchor.");
+    },
+    onCancel: () => {
+      try { window.builderState.pending = null; window.builderState.targetName = null; window.builderState.mode = "IDLE"; } catch(_) {}
+      try { clearAnchors(); } catch(_) {}
+      closeAnchorPickPanel();
     }
-  })));
+  });
 }
 
 
@@ -3516,79 +3708,6 @@ async function openCreatePanel(typeName) {
     }
   }
 
-  // -------- Core extra parameters (beyond basic bool toggles) --------
-  // Core is special: it has several important config fields that users need to set.
-  // We keep these strictly builder-side (no Workspace changes).
-  const extra = {};
-  if (String(typeName).toLowerCase() === "core") {
-    // Helpers for consistent UI blocks
-    function _mkFieldBlock(labelText, inputEl) {
-      const wrap = document.createElement("div");
-      wrap.style.display = "flex";
-      wrap.style.alignItems = "center";
-      wrap.style.justifyContent = "space-between";
-      wrap.style.gap = "10px";
-      wrap.style.border = "1px solid rgba(0,0,0,0.08)";
-      wrap.style.borderRadius = "12px";
-      wrap.style.padding = "10px 12px";
-      wrap.style.background = "#fafafa";
-
-      const lab = document.createElement("div");
-      lab.textContent = labelText;
-      lab.style.fontSize = "13px";
-      lab.style.fontWeight = "650";
-      lab.style.opacity = "0.9";
-
-      wrap.appendChild(lab);
-      wrap.appendChild(inputEl);
-      return wrap;
-    }
-
-    // Robot IP
-    const ip = document.createElement("input");
-    ip.type = "text";
-    ip.placeholder = "e.g. 192.168.1.50 (leave blank for simulation)";
-    ip.value = "";
-    ip.style.flex = "1";
-    ip.style.padding = "8px 10px";
-    ip.style.borderRadius = "10px";
-    ip.style.border = "1px solid rgba(0,0,0,0.12)";
-    ip.style.background = "#fff";
-    extra.ip = ip;
-    form.appendChild(_mkFieldBlock("Robot IP", ip));
-
-    // Camera serial number (shown only if has_camera is checked)
-    const camSerial = document.createElement("input");
-    camSerial.type = "text";
-    camSerial.placeholder = "e.g. Intel RealSense serial";
-    camSerial.value = "";
-    camSerial.style.flex = "1";
-    camSerial.style.padding = "8px 10px";
-    camSerial.style.borderRadius = "10px";
-    camSerial.style.border = "1px solid rgba(0,0,0,0.12)";
-    camSerial.style.background = "#fff";
-    extra.camera_serial_number = camSerial;
-    const camBlock = _mkFieldBlock("Camera serial #", camSerial);
-    form.appendChild(camBlock);
-
-    // Wiring: show/hide & enable/disable based on bool toggles (if present)
-    function _hasBool(name) {
-      const f = fields && fields[name] && fields[name].input;
-      return (f && f.type === "checkbox") ? f : null;
-    }
-    const hasCam = _hasBool("has_camera");
-
-    function syncCoreExtrasUI() {
-      try {
-        const camOn = hasCam ? !!hasCam.checked : false;
-        camBlock.style.display = camOn ? "flex" : "none";
-      } catch (e) {}
-    }
-
-    if (hasCam) hasCam.addEventListener("change", syncCoreExtrasUI);
-    syncCoreExtrasUI();
-  }
-
   // preview (async, don't block UI)
   const prev = document.createElement("div");
   prev.style.border = "1px solid rgba(0,0,0,0.08)";
@@ -3649,22 +3768,6 @@ async function openCreatePanel(typeName) {
       // Only boolean/toggle options are exposed in Builder
       if (opt && opt.kind === "bool") optsOut[k] = !!input.checked;
     }
-
-    // Core: include additional parameters
-    if (String(typeName).toLowerCase() === "core") {
-      try {
-        if (extra.ip) optsOut.ip = String(extra.ip.value || "").trim();
-      } catch (e) {}
-
-      // camera_serial_number only if has_camera true
-      try {
-        const camOn = !!optsOut.has_camera;
-        if (camOn && extra.camera_serial_number) {
-          optsOut.camera_serial_number = String(extra.camera_serial_number.value || "").trim();
-        }
-      } catch (e) {}
-    }
-
     panel.remove();
     try { await spawnComponent(typeName, meta, optsOut); }
     catch (e) { console.error(e); showToast("Create failed: " + (e?.message||e)); }
