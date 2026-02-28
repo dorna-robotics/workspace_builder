@@ -880,11 +880,50 @@ if (node) {
         e.preventDefault();
       });
 
+      // ---- Hover highlight ----
+      let __hoveredName = null;
+      const __HOVER_EDGE_COLOR = new THREE.Color(0x00aaff);
+      const __DEFAULT_EDGE_COLOR = new THREE.Color(0x000000);
+
+      function __setHoverHighlight(name, on) {
+        const root = name ? objectsByName.get(name) : null;
+        if (!root) return;
+        const color = on ? __HOVER_EDGE_COLOR : __DEFAULT_EDGE_COLOR;
+        root.traverse(o => {
+          if (o.isMesh && o.userData.__edgeLines) {
+            o.userData.__edgeLines.material.color.copy(color);
+          }
+        });
+      }
+
+      function __resolveComponentName(hit) {
+        if (!hit || !hit.object) return null;
+        let o = hit.object;
+        while (o) {
+          const cand = (o.userData && o.userData.componentName) ? o.userData.componentName : o.name;
+          if (cand && objectsByName.has(cand)) return cand;
+          o = o.parent;
+        }
+        return null;
+      }
+
       renderer.domElement.addEventListener("pointermove", (e) => {
         setPointerFromEvent(e);
         const hit = pickFirstMesh();
         renderer.domElement.style.cursor =
           (hit && hit.object?.isMesh) ? "pointer" : "default";
+
+        // Hover highlight
+        const name = (hit && hit.object?.isMesh) ? __resolveComponentName(hit) : null;
+        if (name !== __hoveredName) {
+          if (__hoveredName) __setHoverHighlight(__hoveredName, false);
+          __hoveredName = name;
+          if (__hoveredName) __setHoverHighlight(__hoveredName, true);
+        }
+      });
+
+      renderer.domElement.addEventListener("pointerleave", () => {
+        if (__hoveredName) { __setHoverHighlight(__hoveredName, false); __hoveredName = null; }
       });
 
       function registerPickables(node) {
