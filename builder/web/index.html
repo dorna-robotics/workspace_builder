@@ -193,6 +193,58 @@
       const objectsByName = new Map();
       window.objectsByName = objectsByName;
 
+
+      // --- Collision visuals (local boxes) ---
+      // Collision meshes are parented under each solid holder so they follow drag/moves.
+      let showCollisionBoxes = false;
+
+      function makeCollisionMeshLocal(pose, scale) {
+        const geom = new THREE.BoxGeometry(scale[0], scale[1], scale[2]);
+        const mat = new THREE.MeshBasicMaterial({
+          color: 0xff3344,
+          transparent: true,
+          opacity: 0.28,
+          depthWrite: false
+        });
+        const mesh = new THREE.Mesh(geom, mat);
+        const [x, y, z, rx, ry, rz] = pose;
+        mesh.position.set(x, y, z);
+        mesh.quaternion.copy(rodriguesDegToQuaternion(rx, ry, rz));
+        mesh.renderOrder = 20;
+        mesh.userData = mesh.userData || {};
+        mesh.userData.__isCollisionBox = true;
+        return mesh;
+      }
+
+      function clearCollisionGroup(group) {
+        if (!group) return;
+        while (group.children.length) {
+          const c = group.children[0];
+          group.remove(c);
+          try { c.geometry?.dispose?.(); } catch (e) {}
+          try { c.material?.dispose?.(); } catch (e) {}
+        }
+      }
+
+      function fillCollisionGroup(group, boxes) {
+        clearCollisionGroup(group);
+        if (!Array.isArray(boxes)) return;
+        for (const box of boxes) {
+          if (!box?.pose || !box?.scale) continue;
+          const mesh = makeCollisionMeshLocal(box.pose, box.scale);
+          group.add(mesh);
+        }
+      }
+
+      function setCollisionVisible(v) {
+        showCollisionBoxes = !!v;
+        for (const obj of objectsByName.values()) {
+          obj.traverse((o) => {
+            if (o?.userData?.__isCollisionGroup) o.visible = showCollisionBoxes;
+          });
+        }
+      }
+
       function base64ToArrayBuffer(b64) {
         const bin = atob(b64);
         const len = bin.length;
@@ -214,6 +266,9 @@
         return q;
       }
       window.rodriguesDegToQuaternion = rodriguesDegToQuaternion;
+
+
+      // Collision toggle is now in the top builder bar (collisionTopBtn)
 
       // Convert a quaternion to a Rodrigues rotation vector in *degrees*.
       // A Rodrigues vector is axis * angle, where angle is in degrees.
@@ -567,9 +622,23 @@
                 const ui = window.builderState.rectPatternUi;
                 if (!name || !ui) { showToast("Select a valid object."); downInfo=null; return; }
 
+                // Cap→tube redirection: if the user clicks a cap, use its parent tube as the seed instead.
+                // This way patterning a cap behaves identically to patterning its tube.
+                let resolvedName = name;
+                {
+                  const clickedMeta = window.builderState.components?.[name];
+                  if (clickedMeta && String(clickedMeta.type || "").startsWith("cap_") && clickedMeta.attach?.parent_name) {
+                    const parentName = clickedMeta.attach.parent_name;
+                    const parentMeta = window.builderState.components?.[parentName];
+                    if (parentMeta && String(parentMeta.type || "").startsWith("tube_")) {
+                      resolvedName = parentName;
+                    }
+                  }
+                }
+
                 // Determine whether object is anchored (attach metadata may be in builderState or in userData)
-                const meta = (window.builderState.components && window.builderState.components[name]) ? window.builderState.components[name] : null;
-                const obj = objectsByName.get(name);
+                const meta = (window.builderState.components && window.builderState.components[resolvedName]) ? window.builderState.components[resolvedName] : null;
+                const obj = objectsByName.get(resolvedName);
                 const attach = meta?.attach || obj?.userData?.builderAttach || obj?.userData?.attach || null;
 
                 // Anchor A strategy:
@@ -600,7 +669,7 @@
                 const seedOffset = seedWorldPos.clone().sub(aPos);
 
                 window.builderState.rectPattern = {
-                  seedName: name,
+                  seedName: resolvedName,
                   seedType: (meta && meta.type) ? meta.type : (obj?.userData?.typeName || ""),
                   seedOptions: (function(){
                     const o = (meta && typeof meta === "object") ? Object.assign({}, meta) : {};
@@ -621,16 +690,16 @@
                   secondOwnerName: null
                 };
 
-                ui.seedName = name;
+                ui.seedName = resolvedName;
                 ui.seedBox.dataset.state = "ok";
-                ui.seedBox.textContent = hasAttach ? `${name} ✓` : `${name} ✓ (free)`;
+                ui.seedBox.textContent = hasAttach ? `${resolvedName} ✓` : `${resolvedName} ✓ (free)`;
                 ui.seedBox.style.borderColor = "rgba(0,140,0,0.55)";
                 ui.seedBox.style.background = "rgba(0,140,0,0.08)";
                 ui.seedClear.style.display = "inline-flex";
 
                 // reset point box
                 ui.pointBox.dataset.state = "empty";
-                ui.pointBox.textContent = "Select 2nd anchor…";
+                ui.pointBox.textContent = "Select second object…";
                 ui.pointBox.style.borderColor = "rgba(0,0,0,0.18)";
                 ui.pointBox.style.background = "rgba(0,0,0,0.02)";
                 ui.pointClear.style.display = "none";
@@ -638,11 +707,9 @@
                 window.builderState.mode = "IDLE";
                 try { window.hideBanner(); } catch(e) {}
                 if (!hasAttach) {
-                  showToast("Seed set (free object). Now pick 2nd anchor.");
-                } else if (!aWorld) {
-                  showToast("Seed set (anchor unreadable, using current pose). Now pick 2nd anchor.");
+                  showToast("First object set (free). Now pick second object.");
                 } else {
-                  showToast("Seed set. Now pick 2nd anchor.");
+                  showToast("First object set. Now pick second object.");
                 }
                 downInfo=null;
                 return;
@@ -663,7 +730,7 @@
               try {
                 const rp = window.builderState.rectPattern;
                 const ui = window.builderState.rectPatternUi;
-                if (!rp || !ui || !rp.seedName) { showToast("Pick a seed object first."); downInfo=null; return; }
+                if (!rp || !ui || !rp.seedName) { showToast("Pick the first object first."); downInfo=null; return; }
 
                 const targetName = (function(){
                   let o = hit.object;
@@ -687,15 +754,12 @@
                 // Update UI (object chosen, anchor pending)
                 ui.pointBox.dataset.state = "empty";
                 ui.pointBox.textContent = `Target: ${targetName} (pick anchor…)`;
-                ui.pointBox.style.borderColor = "rgba(0,0,0,0.18)";
-                ui.pointBox.style.background = "rgba(0,0,0,0.02)";
+                ui.pointBox.style.borderColor = "rgba(60,130,255,0.7)";
+                ui.pointBox.style.background = "rgba(60,130,255,0.08)";
                 ui.pointClear.style.display = "inline-flex";
 
-                // Enable the anchor list chooser
-                if (ui.anchorListBtn) {
-                  ui.anchorListBtn.disabled = false;
-                  ui.anchorListBtn.style.opacity = "1";
-                }
+                // Populate the inline anchor list in the panel
+                try { if (ui.populateAnchorList) ui.populateAnchorList(targetName); } catch(e) { console.warn(e); }
 
                 downInfo=null;
                 return;
@@ -714,7 +778,7 @@
               try {
                 const rp = window.builderState.rectPattern;
                 const ui = window.builderState.rectPatternUi;
-                if (!rp || !ui || !rp.aPos) { showToast("Pick a seed object first."); downInfo=null; return; }
+                if (!rp || !ui || !rp.aPos) { showToast("Pick the first object first."); downInfo=null; return; }
 
                 const bPos = hit.point.clone();
                 rp.bPos = bPos;
@@ -722,7 +786,7 @@
 
                 // Update UI
                 ui.pointBox.dataset.state = "ok";
-                ui.pointBox.textContent = `2nd point ✓ (${bPos.x.toFixed(2)}, ${bPos.y.toFixed(2)}, ${bPos.z.toFixed(2)})`;
+                ui.pointBox.textContent = `Second point ✓ (${bPos.x.toFixed(2)}, ${bPos.y.toFixed(2)}, ${bPos.z.toFixed(2)})`;
                 ui.pointBox.style.borderColor = "rgba(0,140,0,0.55)";
                 ui.pointBox.style.background = "rgba(0,140,0,0.08)";
                 ui.pointClear.style.display = "inline-flex";
@@ -740,7 +804,7 @@
 
                 window.builderState.mode = "IDLE";
                 try { window.hideBanner(); } catch(e) {}
-                showToast("2nd point set.");
+                showToast("Second point set.");
                 downInfo=null;
                 return;
               } catch (e) {
@@ -922,7 +986,7 @@ if (node) {
         // Multi-mesh support (simulation-style assemblies)
         // spec.meshes: [{ meshUrl, pose:[x,y,z,a,b,c], solidName }]
         if (Array.isArray(spec.meshes) && spec.meshes.length) {
-          const sig = JSON.stringify(spec.meshes.map(m => [m.meshUrl, ...(m.pose||[]), m.solidName||""]));
+          const sig = JSON.stringify(spec.meshes.map(m => [m.meshUrl, ...(m.pose||[]), m.solidName||"", JSON.stringify(m.collisionLocal||[])]));
           if (root.userData.meshesSig !== sig) {
             root.userData.meshesSig = sig;
             root.userData.meshUrl = null;
@@ -942,6 +1006,16 @@ if (node) {
                 holder.position.set(x,y,z);
                 holder.quaternion.copy(rodriguesDegToQuaternion(rx,ry,rz));
               }
+
+              // Collision boxes for this solid (local to the holder)
+              const __col = new THREE.Group();
+              __col.name = "__collision__";
+              __col.visible = showCollisionBoxes;
+              __col.userData = __col.userData || {};
+              __col.userData.__isCollisionGroup = true;
+              holder.add(__col);
+              fillCollisionGroup(__col, m.collisionLocal || []);
+
               root.add(holder);
 
               gltfLoader.load(
@@ -1001,6 +1075,21 @@ if (node) {
                 } catch (e) {}
 
                 root.add(gltf.scene);
+
+                // Collision boxes (single-solid components)
+                if (Array.isArray(spec.collisionLocal)) {
+                  let __col = root.getObjectByName("__collision__");
+                  if (!__col) {
+                    __col = new THREE.Group();
+                    __col.name = "__collision__";
+                    __col.visible = showCollisionBoxes;
+                    __col.userData = __col.userData || {};
+                    __col.userData.__isCollisionGroup = true;
+                    root.add(__col);
+                  }
+                  fillCollisionGroup(__col, spec.collisionLocal);
+                }
+
                 registerPickables(gltf.scene);
               },
               undefined,
@@ -1045,9 +1134,15 @@ if (node) {
         }
 
         if (Array.isArray(spec.pose) && spec.pose.length === 6) {
-          const [x, y, z, rx, ry, rz] = spec.pose;
-          root.position.set(x, y, z);
-          root.quaternion.copy(rodriguesDegToQuaternion(rx, ry, rz));
+          // Skip echo pose updates for objects recently positioned by the builder
+          // (e.g., pattern-fill cap clones). The server echoes the spawn's default
+          // pose which would overwrite the correct snapped position.
+          const __guard = root.userData?.__builderPoseGuard;
+          if (!__guard || performance.now() - __guard > 3000) {
+            const [x, y, z, rx, ry, rz] = spec.pose;
+            root.position.set(x, y, z);
+            root.quaternion.copy(rodriguesDegToQuaternion(rx, ry, rz));
+          }
         }
 
         if (typeof spec.visible === "boolean") {
@@ -1204,6 +1299,7 @@ function __applyUpsert(name, spec) {
 function __applyDelete(name) {
   try { window.socket?.emit?.("upstream_update", { [name]: { delete: true } }); } catch (e) {}
   try { window.upsertObject?.(name, { delete: true }); } catch (e) {}
+  try { if (window.__updateConfigPreview) window.__updateConfigPreview(); } catch (e) {}
 }
 
 
@@ -1577,7 +1673,7 @@ function ensureBuilderBar() {
   plus.addEventListener("click", () => openInsertMenu());
 
   const save = mkBtn("💾");
-  save.title = "Save config.yaml";
+  save.title = "Save config.j2";
   save.addEventListener("click", () => saveConfig());
 
   const undoB = mkBtn("↶");
@@ -1588,10 +1684,41 @@ function ensureBuilderBar() {
   redoB.title = "Redo (Ctrl/Cmd+Y / Ctrl/Cmd+Shift+Z)";
   redoB.addEventListener("click", () => { try { window.__redo?.(); } catch(e) {} });
 
+  // Pan mode toggle button in the top bar
+  const panTopBtn = mkBtn("🤚");
+  panTopBtn.title = "Pan (toggle left-drag)";
+  panTopBtn.id = "panTopBtn";
+  panTopBtn.style.fontSize = "18px";
+  window.__builderUpdatePanButton = (active) => {
+    panTopBtn.style.background = active ? "rgba(90,160,255,0.35)" : "#fff";
+    panTopBtn.style.border = active ? "2px solid rgba(90,160,255,0.7)" : "1px solid rgba(0,0,0,0.12)";
+  };
+  panTopBtn.addEventListener("click", () => {
+    window.builderState.panMode = !window.builderState.panMode;
+    try { window.__builderUpdatePanButton(window.builderState.panMode); } catch(e){}
+    try { applyPanMode(); } catch(e){}
+  });
+
   bar.appendChild(plus);
   bar.appendChild(save);
   bar.appendChild(undoB);
   bar.appendChild(redoB);
+  bar.appendChild(panTopBtn);
+
+  // Collision toggle button in top bar
+  const collisionBtn = mkBtn("📦");
+  collisionBtn.title = "Show collision boxes";
+  collisionBtn.id = "collisionTopBtn";
+  collisionBtn.style.fontSize = "16px";
+  let collisionActive = false;
+  collisionBtn.addEventListener("click", () => {
+    collisionActive = !collisionActive;
+    collisionBtn.style.background = collisionActive ? "rgba(255,60,60,0.25)" : "#fff";
+    collisionBtn.style.border = collisionActive ? "2px solid rgba(255,60,60,0.6)" : "1px solid rgba(0,0,0,0.12)";
+    try { setCollisionVisible(collisionActive); } catch(e) {}
+  });
+  bar.appendChild(collisionBtn);
+
   document.body.appendChild(bar);
 
   // Action buttons (appear when an object is selected)
@@ -1660,7 +1787,10 @@ function ensureBuilderBar() {
   }
 
   const btnRemove = mkAction(`<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M9 3h6m-8 4h10m-9 0v14a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V7M10 11v8M14 11v8" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <path d="M3 6h18" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M5 6l1 14a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-14" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M10 11v6M14 11v6" stroke="white" stroke-width="2" stroke-linecap="round"/>
 </svg>`, () => removeSelected(), "Delete");
   const btnRotate = mkAction(`<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
   <path d="M21 12a9 9 0 1 1-3-6.7" stroke="white" stroke-width="2" stroke-linecap="round"/>
@@ -1672,18 +1802,23 @@ function ensureBuilderBar() {
 </svg>`, () => moveSelected(), "Move (re-attach)");
 
 
-  const btnPan    = mkAction(`<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M4 12c0 4 3 8 8 8h2c3 0 6-2 6-5v-2" stroke="white" stroke-width="2" stroke-linecap="round"/>
-  <path d="M7 13V6c0-1 1-2 2-2s2 1 2 2v6" stroke="white" stroke-width="2" stroke-linecap="round"/>
-  <path d="M11 12V7c0-1 1-2 2-2s2 1 2 2v5" stroke="white" stroke-width="2" stroke-linecap="round"/>
-  <path d="M15 12V8c0-1 1-2 2-2s2 1 2 2v6" stroke="white" stroke-width="2" stroke-linecap="round"/>
-</svg>`, () => togglePanMode(), "Pan (toggle left-drag)");
-
-  const btnFlip   = mkAction(`<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M6 7h12M6 17h12" stroke="white" stroke-width="2" stroke-linecap="round"/>
-  <path d="M12 7v10" stroke="white" stroke-width="2" stroke-linecap="round"/>
-  <path d="M9 10l3-3 3 3M9 14l3 3 3-3" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>`, () => flipSelected(), "Flip (invert Z)");
+  const btnFlipX  = mkAction(`<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M12 3v18" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+  <path d="M6 8l-3 4 3 4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M18 8l3 4-3 4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="12" y="22" fill="white" font-size="7" font-weight="bold" text-anchor="middle">X</text>
+</svg>`, () => flipSelectedAxis("x"), "Flip 90° X");
+  const btnFlipY  = mkAction(`<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M3 12h18" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+  <path d="M8 6l4-3 4 3" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8 18l4 3 4-3" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="12" y="15" fill="white" font-size="7" font-weight="bold" text-anchor="middle">Y</text>
+</svg>`, () => flipSelectedAxis("y"), "Flip 90° Y");
+  const btnFlipZ  = mkAction(`<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="12" cy="12" r="8" stroke="white" stroke-width="1.5" opacity="0.4" fill="none"/>
+  <path d="M12 4v4M12 16v4" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <text x="12" y="14" fill="white" font-size="7" font-weight="bold" text-anchor="middle">Z</text>
+</svg>`, () => flipSelectedAxis("z"), "Flip 90° Z");
   // NOTE: Plate autofill pattern removed (was unreliable). Use Rectangular Pattern instead.
 
   // Fusion-style rectangular pattern (any object): pick second anchor/point, enter counts per axis.
@@ -1701,16 +1836,15 @@ function ensureBuilderBar() {
 actions.appendChild(btnRemove);
   actions.appendChild(btnRotate);
   actions.appendChild(btnMove);
-  actions.appendChild(btnPan);
-  actions.appendChild(btnFlip);
+  actions.appendChild(btnFlipX);
+  actions.appendChild(btnFlipY);
+  actions.appendChild(btnFlipZ);
   actions.appendChild(btnRectPattern);
   document.body.appendChild(actions);
   try { applyPanMode(); } catch(e) {}
 
   window.__builderSetActionsEnabled = (enabled) => {
-    // Actions that require a selected object.
-    // NOTE: Pan is a mode toggle and should remain available even with no selection.
-    for (const b of [btnRemove, btnRotate, btnMove, btnFlip]) {
+    for (const b of [btnRemove, btnRotate, btnMove, btnFlipX, btnFlipY, btnFlipZ]) {
       b.disabled = !enabled;
       b.style.opacity = enabled ? "1.0" : "0.4";
     }
@@ -1813,9 +1947,9 @@ function buildSbsAdapterAnchors() {
   };
 }
 
-async function spawnComponent(type, meta=null, options=null) {
+async function spawnComponent(type, meta=null, options=null, customName=null) {
   // Generic spawn for any other component type. Uses /api/type_meta for anchors/options.
-  
+
 // Instance naming (collision-safe):
 // - Most components use "<type>_<n>"
 // - For "core", the first instance is "core" (if free), then "core_2", ...
@@ -1824,29 +1958,35 @@ if (!window.builderState.next[type]) window.builderState.next[type] = 1;
 function __nameExists(n) {
   try {
     if (window.builderState.components && window.builderState.components[n]) return true;
-    if (typeof objectsByName !== "undefined" && objectsByName && objectsByName[n]) return true;
+    if (typeof objectsByName !== "undefined" && objectsByName && objectsByName.has && objectsByName.has(n)) return true;
   } catch (e) {}
   return false;
 }
 
 let name;
-let i = window.builderState.next[type];
 
-// Propose candidate based on type + index
-function __candidate(t, idx) {
-  if (t === "core") {
-    return (idx === 1) ? "core" : `core_${idx}`;
+// Use custom name if provided and available
+if (customName && customName.trim() && !__nameExists(customName.trim())) {
+  name = customName.trim();
+} else {
+  let i = window.builderState.next[type];
+
+  // Propose candidate based on type + index
+  function __candidate(t, idx) {
+    if (t === "core") {
+      return (idx === 1) ? "core" : `core_${idx}`;
+    }
+    return `${t}_${idx}`;
   }
-  return `${t}_${idx}`;
-}
 
-name = __candidate(type, i);
-while (__nameExists(name)) {
-  i += 1;
   name = __candidate(type, i);
+  while (__nameExists(name)) {
+    i += 1;
+    name = __candidate(type, i);
+  }
+  // Next free index for this type
+  window.builderState.next[type] = i + 1;
 }
-// Next free index for this type
-window.builderState.next[type] = i + 1;
 
 
   // Instantiate component server-side (simulation-style) so anchors match exactly.
@@ -1867,14 +2007,16 @@ window.builderState.next[type] = i + 1;
   let anchorsBySolid = {};
   let meshes = null;
   let glb = (meta && meta.glb) ? meta.glb : `/static/CAD/${type}.glb`;
+  let collisionLocalSingle = [];
   if (blueprint && Array.isArray(blueprint.solids) && blueprint.solids.length) {
+    try { collisionLocalSingle = blueprint.solids[0].collisionLocal || []; } catch (e) { collisionLocalSingle = []; }
     meshes = [];
     for (const s of blueprint.solids) {
       if (s && s.solid && s.anchors && Object.keys(s.anchors).length) {
         anchorsBySolid[s.solid] = s.anchors;
       }
       if (s && s.glb) {
-        meshes.push({ meshUrl: s.glb, pose: s.pose || [0,0,0,0,0,0], solidName: s.solid });
+        meshes.push({ meshUrl: s.glb, pose: s.pose || [0,0,0,0,0,0], solidName: s.solid, collisionLocal: s.collisionLocal || [] });
       }
     }
     // If we got at least one mesh, do multi-mesh rendering.
@@ -1899,6 +2041,7 @@ window.builderState.next[type] = i + 1;
   const spec = {
     meshUrl: meshes ? null : glb,
     meshes: meshes,
+    collisionLocal: meshes ? null : (collisionLocalSingle || []),
     pose: [0,0,((type === "fixture_plate" && !window.builderState.lastFixturePlate) ? 0 : 300),0,0,0],
     visible: true,
     anchors,
@@ -1964,6 +2107,14 @@ window.spawnComponent = spawnComponent;
 async function spawnComponentSilent(type, meta=null, options=null) {
   if (!window.builderState.next[type]) window.builderState.next[type] = 1;
 
+  function __nameExists(n) {
+    try {
+      if (window.builderState.components && window.builderState.components[n]) return true;
+      if (typeof objectsByName !== "undefined" && objectsByName && objectsByName.has && objectsByName.has(n)) return true;
+    } catch (e) {}
+    return false;
+  }
+
   let name;
   if (type === "core") {
     const alreadyHasCore = !!(window.builderState.components && window.builderState.components["core"]);
@@ -1972,9 +2123,11 @@ async function spawnComponentSilent(type, meta=null, options=null) {
       window.builderState.next[type] = 2;
     } else {
       name = `core_${window.builderState.next[type]++}`;
+      while (__nameExists(name)) name = `core_${window.builderState.next[type]++}`;
     }
   } else {
     name = `${type}_${window.builderState.next[type]++}`;
+    while (__nameExists(name)) name = `${type}_${window.builderState.next[type]++}`;
   }
   // Instantiate server-side so anchors/options match exactly.
   let blueprint = null;
@@ -1993,14 +2146,16 @@ async function spawnComponentSilent(type, meta=null, options=null) {
   let anchorsBySolid = {};
   let meshes = null;
   let glb = (meta && meta.glb) ? meta.glb : `/static/CAD/${type}.glb`;
+  let collisionLocalSingle = [];
   if (blueprint && Array.isArray(blueprint.solids) && blueprint.solids.length) {
+    try { collisionLocalSingle = blueprint.solids[0].collisionLocal || []; } catch (e) { collisionLocalSingle = []; }
     meshes = [];
     for (const s of blueprint.solids) {
       if (s && s.solid && s.anchors && Object.keys(s.anchors).length) {
         anchorsBySolid[s.solid] = s.anchors;
       }
       if (s && s.glb) {
-        meshes.push({ meshUrl: s.glb, pose: s.pose || [0,0,0,0,0,0], solidName: s.solid });
+        meshes.push({ meshUrl: s.glb, pose: s.pose || [0,0,0,0,0,0], solidName: s.solid, collisionLocal: s.collisionLocal || [] });
       }
     }
     if (!meshes.length) meshes = null;
@@ -2103,7 +2258,7 @@ function openAnchorPickPanel(opts) {
   const panel = document.createElement("div");
   panel.id = opts.panelId || "anchorPickPanel";
   panel.style.position = "fixed";
-  panel.style.right = "18px";
+  panel.style.right = "340px";
   panel.style.top = "18px";
   panel.style.width = "360px";
   panel.style.maxHeight = "85vh";
@@ -2415,7 +2570,7 @@ function openTargetObjectPickPanel(childName) {
   const panel = document.createElement("div");
   panel.id = "targetObjectPickPanel";
   panel.style.position = "fixed";
-  panel.style.right = "18px";
+  panel.style.right = "340px";
   panel.style.top = "18px";
   panel.style.width = "360px";
   panel.style.maxHeight = "85vh";
@@ -3168,6 +3323,96 @@ try {
   showToast("Flipped " + name);
 }
 
+function flipSelectedAxis(axis) {
+  const name = window.builderState.selectedName;
+  if (!name) return;
+  const obj = objectsByName.get(name);
+  if (!obj) return;
+
+  const meta = window.builderState.components[name];
+  if (!meta) return;
+
+  // Undo: capture state before
+  const __prevMeta = __deepClone(meta || null);
+  const __prevPose = (function(){
+    try {
+      const r = window.quaternionToRodriguesDeg ? window.quaternionToRodriguesDeg(obj.quaternion) : [0,0,0];
+      return [obj.position.x, obj.position.y, obj.position.z, r[0]||0, r[1]||0, r[2]||0];
+    } catch (e) { return null; }
+  })();
+
+  const __applyUndoSnapshot = () => {
+    try {
+      const __nextMeta = __deepClone(window.builderState.components[name] || null);
+      const r2 = window.quaternionToRodriguesDeg ? window.quaternionToRodriguesDeg(obj.quaternion) : [0,0,0];
+      const __nextPose = [obj.position.x, obj.position.y, obj.position.z, r2[0]||0, r2[1]||0, r2[2]||0];
+      __pushUndo({ kind: "transform", name, prevMeta: __prevMeta, prevPose: __prevPose, nextMeta: __nextMeta, nextPose: __nextPose });
+    } catch(e) {}
+  };
+
+  const axisVec = axis === "x" ? new THREE.Vector3(1,0,0) : axis === "y" ? new THREE.Vector3(0,1,0) : new THREE.Vector3(0,0,1);
+  const deg90 = Math.PI / 2;
+
+  // Anchored: flip about anchor frame
+  if (meta.attach) {
+    if (!Array.isArray(meta.attach.offset)) meta.attach.offset = [0,0,0,0,0,0];
+
+    try {
+      const qOff = rodriguesDegToQuaternion(meta.attach.offset[3]||0, meta.attach.offset[4]||0, meta.attach.offset[5]||0);
+      const qFlip = new THREE.Quaternion().setFromAxisAngle(axisVec, deg90);
+      const qNew = qOff.clone().multiply(qFlip);
+      const rod = window.quaternionToRodriguesDeg ? window.quaternionToRodriguesDeg(qNew) : [0,0,0];
+      meta.attach.offset[3] = rod[0]||0; meta.attach.offset[4] = rod[1]||0; meta.attach.offset[5] = rod[2]||0;
+    } catch (e) {
+      // fallback
+      if (axis === "x") meta.attach.offset[3] = (meta.attach.offset[3] || 0) + 90;
+      else if (axis === "y") meta.attach.offset[4] = (meta.attach.offset[4] || 0) + 90;
+      else meta.attach.offset[5] = (meta.attach.offset[5] || 0) + 90;
+    }
+    try {
+      __snapChildToParentAnchor(
+        name,
+        meta.attach.parent_name,
+        meta.attach.parent_anchor_key || meta.attach.parent_anchor,
+        meta.attach.child_solid,
+        meta.attach.child_anchor_key || meta.attach.child_anchor,
+        meta.attach.offset,
+        meta.attach.parent_solid
+      );
+    } catch (e) {
+      console.warn("flip axis: resnap failed", e);
+      showToast("Flip failed (see console)");
+      try { window.builderState.components[name] = __prevMeta; } catch(_) {}
+      return;
+    }
+    try { __propagateAnchoredSubtree(name); } catch (e) {}
+    __applyUndoSnapshot();
+    showToast("Flipped " + name + " (" + axis.toUpperCase() + " 90°)");
+    return;
+  }
+
+  // Free: flip about its own origin
+  if (axis === "x") obj.rotateX(deg90);
+  else if (axis === "y") obj.rotateY(deg90);
+  else obj.rotateZ(deg90);
+
+  const abc = getPoseABC(meta);
+  if (axis === "x") abc[0] = (abc[0] || 0) + 90;
+  else if (axis === "y") abc[1] = (abc[1] || 0) + 90;
+  else abc[2] = (abc[2] || 0) + 90;
+  setPoseABC(meta, abc);
+
+  try { __propagateAnchoredSubtree(name); } catch (e) {}
+
+  if (window.socket && socket?.emit) {
+    socket.emit("upstream_update", {
+      [name]: { pose: [obj.position.x, obj.position.y, obj.position.z, abc[0], abc[1], abc[2]] }
+    });
+  }
+
+  __applyUndoSnapshot();
+  showToast("Flipped " + name + " (" + axis.toUpperCase() + " 90°)");
+}
 
 
 function moveSelected() {
@@ -3224,23 +3469,23 @@ function moveSelected() {
 
 
 function openInsertMenu() {
-  // Icon tile menu (Fusion-ish)
+  // Icon tile menu (Fusion-ish) - centered on screen with search + categories
   let bg = document.getElementById("builderModalBg");
   if (bg) bg.remove();
   bg = document.createElement("div");
   bg.id = "builderModalBg";
   bg.style.position = "fixed";
   bg.style.inset = "0";
-  bg.style.background = "rgba(0,0,0,0.25)";
+  bg.style.background = "rgba(0,0,0,0.35)";
   bg.style.zIndex = "9998";
+  bg.style.display = "flex";
+  bg.style.alignItems = "center";
+  bg.style.justifyContent = "center";
   bg.addEventListener("click", (e) => { if (e.target === bg) bg.remove(); });
 
   const box = document.createElement("div");
-  box.style.position = "absolute";
-  box.style.left = "12px";
-  box.style.top = "60px";
-  box.style.width = "460px";
-  box.style.maxWidth = "calc(100vw - 24px)";
+  box.style.width = "560px";
+  box.style.maxWidth = "calc(100vw - 48px)";
   box.style.maxHeight = "80vh";
   box.style.display = "flex";
   box.style.flexDirection = "column";
@@ -3248,25 +3493,68 @@ function openInsertMenu() {
   box.style.borderRadius = "16px";
   box.style.border = "1px solid rgba(0,0,0,0.12)";
   box.style.boxShadow = "0 16px 40px rgba(0,0,0,0.18)";
-  box.style.padding = "12px";
+  box.style.padding = "16px";
   box.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, Arial";
   box.style.userSelect = "none";
 
   const header = document.createElement("div");
-  header.textContent = "Insert";
+  header.textContent = "Insert Component";
   header.style.fontWeight = "800";
+  header.style.fontSize = "16px";
   header.style.marginBottom = "10px";
   box.appendChild(header);
 
-  const grid = document.createElement("div");
-  grid.style.display = "grid";
-  grid.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
-  grid.style.gap = "10px";
-  grid.style.overflowY = "auto";
-  grid.style.overflowX = "hidden";
-  grid.style.paddingRight = "4px";
-  grid.style.flex = "1";
-  box.appendChild(grid);
+  // Search input
+  const searchInput = document.createElement("input");
+  searchInput.type = "text";
+  searchInput.placeholder = "Search components...";
+  searchInput.style.width = "100%";
+  searchInput.style.boxSizing = "border-box";
+  searchInput.style.padding = "10px 12px";
+  searchInput.style.borderRadius = "12px";
+  searchInput.style.border = "1px solid rgba(0,0,0,0.15)";
+  searchInput.style.marginBottom = "12px";
+  searchInput.style.fontSize = "13px";
+  searchInput.style.outline = "none";
+  box.appendChild(searchInput);
+
+  // Scrollable content area
+  const scrollArea = document.createElement("div");
+  scrollArea.style.overflowY = "auto";
+  scrollArea.style.overflowX = "hidden";
+  scrollArea.style.flex = "1";
+  scrollArea.style.paddingRight = "4px";
+  box.appendChild(scrollArea);
+
+  // Category definitions
+  const CATEGORIES = {
+    "Plates":     (t) => t.includes("plate") || t.includes("fixture"),
+    "Adapters":   (t) => t.includes("adapter"),
+    "Grippers":   (t) => t.includes("gripper") || t.includes("grip"),
+    "Robots":     (t) => t === "core" || t.includes("robot") || t.includes("dorna"),
+    "Sensors":    (t) => t.includes("sensor") || t.includes("camera") || t.includes("lidar"),
+    "Tools":      (t) => t.includes("tool") || t.includes("changer") || t.includes("spindle") || t.includes("pen") || t.includes("laser"),
+    "Holders":    (t) => t.includes("holder") || t.includes("rack") || t.includes("mount") || t.includes("stand") || t.includes("bracket"),
+    "Tubes & Pipes": (t) => t.includes("tube") || t.includes("pipe") || t.includes("hose"),
+    "Caps":       (t) => /^cap[_-]/.test(t),
+    "Other":      () => true
+  };
+
+  function categorize(items) {
+    const groups = {};
+    const assigned = new Set();
+    for (const [catName, matcher] of Object.entries(CATEGORIES)) {
+      if (catName === "Other") continue;
+      const matches = items.filter(t => !assigned.has(t) && matcher(t));
+      if (matches.length) {
+        groups[catName] = matches;
+        matches.forEach(t => assigned.add(t));
+      }
+    }
+    const leftover = items.filter(t => !assigned.has(t));
+    if (leftover.length) groups["Other"] = leftover;
+    return groups;
+  }
 
   const mkTile = ({name, iconSvg, onClick}) => {
     const t = document.createElement("button");
@@ -3282,6 +3570,7 @@ function openInsertMenu() {
     t.style.background = "#f8fbff";
     t.style.cursor = "pointer";
     t.style.boxShadow = "0 4px 10px rgba(0,0,0,0.06)";
+    t.dataset.componentType = name;
     t.addEventListener("click", () => { bg.remove(); onClick(); });
 
     const icon = document.createElement("div");
@@ -3303,7 +3592,7 @@ function openInsertMenu() {
     return t;
   };
 
-  
+
   // Thumbnails: render actual GLB model into a small offscreen canvas and cache in localStorage.
 // Goal: Fusion-like catalog thumbnails: object centered, consistently framed (no random zoom/crop),
 // with an isometric-ish view that works across flat plates and tall parts.
@@ -3575,6 +3864,55 @@ async function getOrCreateThumbnail(modelKey, glbUrl) {
   }
 
   // Populate catalog automatically from /api/catalog (scans static/CAD/*.glb)
+  let allTiles = [];
+  let allCategoryEls = [];
+
+  function renderCatalog(filterText) {
+    scrollArea.innerHTML = "";
+    const q = (filterText || "").trim().toLowerCase();
+    const filteredItems = allTiles.filter(t => !q || t.type.toLowerCase().includes(q));
+    const filteredTypes = filteredItems.map(t => t.type);
+
+    if (!filteredTypes.length) {
+      const empty = document.createElement("div");
+      empty.textContent = "No components match your search.";
+      empty.style.padding = "20px";
+      empty.style.opacity = "0.6";
+      empty.style.textAlign = "center";
+      scrollArea.appendChild(empty);
+      return;
+    }
+
+    const groups = categorize(filteredTypes);
+    for (const [catName, types] of Object.entries(groups)) {
+      const catHeader = document.createElement("div");
+      catHeader.textContent = catName;
+      catHeader.style.fontWeight = "700";
+      catHeader.style.fontSize = "12px";
+      catHeader.style.color = "rgba(0,0,0,0.5)";
+      catHeader.style.textTransform = "uppercase";
+      catHeader.style.letterSpacing = "0.5px";
+      catHeader.style.marginTop = "8px";
+      catHeader.style.marginBottom = "6px";
+      catHeader.style.paddingLeft = "4px";
+      scrollArea.appendChild(catHeader);
+
+      const grid = document.createElement("div");
+      grid.style.display = "grid";
+      grid.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
+      grid.style.gap = "10px";
+      grid.style.marginBottom = "8px";
+      scrollArea.appendChild(grid);
+
+      for (const type of types) {
+        const entry = allTiles.find(t => t.type === type);
+        if (entry && entry.tile) {
+          grid.appendChild(entry.tile);
+        }
+      }
+    }
+  }
+
   (async () => {
     let items = ["fixture_plate", "sbs_adapter"]; // fallback
     try {
@@ -3583,7 +3921,6 @@ async function getOrCreateThumbnail(modelKey, glbUrl) {
       if (js && js.ok && Array.isArray(js.items) && js.items.length) items = js.items;
     } catch (e) {}
 
-    // Prefer fixture_plate near top
     items = items.slice().sort((a,b) => {
       if (a === "fixture_plate") return -1;
       if (b === "fixture_plate") return 1;
@@ -3593,12 +3930,21 @@ async function getOrCreateThumbnail(modelKey, glbUrl) {
     for (const type of items) {
       const glb = "/static/CAD/" + type + ".glb";
       const tile = mkTile({ name: type, iconSvg: "", onClick: () => openCreatePanel(type) });
-      grid.appendChild(tile);
       tile.querySelector("div").replaceWith(mkThumbIcon(type, glb));
+      allTiles.push({ type, tile });
     }
+
+    renderCatalog("");
   })();
-bg.appendChild(box);
+
+  searchInput.addEventListener("input", () => renderCatalog(searchInput.value));
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { bg.remove(); }
+  });
+
+  bg.appendChild(box);
   document.body.appendChild(bg);
+  setTimeout(() => { try { searchInput.focus(); } catch(_) {} }, 0);
 }
 
 // Simple "Create" panel.
@@ -3614,6 +3960,26 @@ async function openCreatePanel(typeName) {
     const js = await res.json();
     if (js && js.ok && js.meta) meta = js.meta;
   } catch (e) {}
+
+  // --- Auto-detect matching cap for tube types ---
+  let __capType = null;   // e.g. "cap_autosampler_2ml"
+  let __capMeta = null;
+  if (String(typeName).startsWith("tube_")) {
+    const candidate = "cap_" + typeName.slice(5);
+    try {
+      const cr = await fetch("/api/type_meta?type=" + encodeURIComponent(candidate), { cache: "no-store" });
+      const cj = await cr.json();
+      if (cj && cj.ok && cj.meta) {
+        // Check tube has "place" anchor and cap has "center" anchor (in any solid)
+        const tubeHasPlace = Object.values(meta.anchors || {}).some(a => a && a["place"]);
+        const capHasCenter = Object.values(cj.meta.anchors || {}).some(a => a && a["center"]);
+        if (tubeHasPlace && capHasCenter) {
+          __capType = candidate;
+          __capMeta = cj.meta;
+        }
+      }
+    } catch (e) {}
+  }
 
   const panel = document.createElement("div");
   panel.id = "createPanel";
@@ -3649,6 +4015,54 @@ async function openCreatePanel(typeName) {
   hint.style.fontSize = "13px";
   hint.style.marginBottom = "14px";
 
+  // Instance name field (editable)
+  const nameRow = document.createElement("div");
+  nameRow.style.display = "flex";
+  nameRow.style.alignItems = "center";
+  nameRow.style.gap = "10px";
+  nameRow.style.marginBottom = "14px";
+  nameRow.style.padding = "10px 12px";
+  nameRow.style.border = "1px solid rgba(0,0,0,0.08)";
+  nameRow.style.borderRadius = "12px";
+  nameRow.style.background = "#fafafa";
+
+  const nameLabel = document.createElement("div");
+  nameLabel.textContent = "Name";
+  nameLabel.style.fontSize = "13px";
+  nameLabel.style.fontWeight = "650";
+  nameLabel.style.opacity = "0.9";
+  nameLabel.style.whiteSpace = "nowrap";
+
+  // Compute default name
+  function __computeDefaultName(type) {
+    if (!window.builderState.next[type]) window.builderState.next[type] = 1;
+    let i = window.builderState.next[type];
+    function __candidate(t, idx) {
+      if (t === "core") return (idx === 1) ? "core" : `core_${idx}`;
+      return `${t}_${idx}`;
+    }
+    let name = __candidate(type, i);
+    while (window.builderState.components && window.builderState.components[name]) {
+      i++;
+      name = __candidate(type, i);
+    }
+    return name;
+  }
+
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.value = __computeDefaultName(typeName);
+  nameInput.style.flex = "1";
+  nameInput.style.padding = "8px 10px";
+  nameInput.style.borderRadius = "10px";
+  nameInput.style.border = "1px solid rgba(0,0,0,0.12)";
+  nameInput.style.background = "#fff";
+  nameInput.style.fontSize = "13px";
+  nameInput.style.fontFamily = "'SF Mono', 'Fira Code', 'Consolas', monospace";
+
+  nameRow.appendChild(nameLabel);
+  nameRow.appendChild(nameInput);
+
   // options form (auto)
   const form = document.createElement("div");
   form.style.display = "grid";
@@ -3658,8 +4072,11 @@ async function openCreatePanel(typeName) {
 
   const fields = {};
   const optsAll = Array.isArray(meta.options) ? meta.options : [];
-  // Do not surface the internal `simulation` toggle in the Builder UI.
-  const opts = optsAll.filter(o => o && o.kind === "bool" && String(o.name || o.key || "") !== "simulation");
+  // Do not surface internal toggles in the Builder UI.
+  // `simulation` is always True; `has_motion_plan` is always True for core.
+  const hiddenOpts = ["simulation"];
+  if (String(typeName || "").toLowerCase() === "core") hiddenOpts.push("has_motion_plan");
+  const opts = optsAll.filter(o => o && o.kind === "bool" && !hiddenOpts.includes(String(o.name || o.key || "")));
   if (!opts.length) {
     const none = document.createElement("div");
     none.textContent = "";
@@ -3706,6 +4123,36 @@ async function openCreatePanel(typeName) {
       wrap.appendChild(input);
       form.appendChild(wrap);
     }
+  }
+
+  // --- has_cap checkbox (only for tube types with a matching cap) ---
+  let __capCheckbox = null;
+  if (__capType) {
+    const capWrap = document.createElement("div");
+    capWrap.style.display = "flex";
+    capWrap.style.alignItems = "center";
+    capWrap.style.justifyContent = "space-between";
+    capWrap.style.gap = "10px";
+    capWrap.style.border = "1px solid rgba(60,130,255,0.18)";
+    capWrap.style.borderRadius = "12px";
+    capWrap.style.padding = "10px 12px";
+    capWrap.style.background = "rgba(60,130,255,0.04)";
+    capWrap.style.marginBottom = "10px";
+
+    const capLab = document.createElement("div");
+    capLab.textContent = "has_cap";
+    capLab.style.fontSize = "13px";
+    capLab.style.fontWeight = "650";
+    capLab.style.opacity = "0.9";
+
+    __capCheckbox = document.createElement("input");
+    __capCheckbox.type = "checkbox";
+    __capCheckbox.checked = false;
+    __capCheckbox.style.transform = "scale(1.25)";
+
+    capWrap.appendChild(capLab);
+    capWrap.appendChild(__capCheckbox);
+    form.appendChild(capWrap);
   }
 
   // preview (async, don't block UI)
@@ -3765,11 +4212,46 @@ async function openCreatePanel(typeName) {
     const optsOut = {};
     for (const k in fields) {
       const { opt, input } = fields[k];
-      // Only boolean/toggle options are exposed in Builder
       if (opt && opt.kind === "bool") optsOut[k] = !!input.checked;
     }
+    const wantCap = !!(__capCheckbox && __capCheckbox.checked && __capType);
+    // Get custom name - pass directly into spawnComponent so it's used from the start
+    const customName = (nameInput.value || "").trim();
     panel.remove();
-    try { await spawnComponent(typeName, meta, optsOut); }
+    try {
+      const tubeName = await spawnComponent(typeName, meta, optsOut, customName || null);
+
+      // Auto-spawn cap if requested
+      if (wantCap && tubeName) {
+        try {
+          const capName = await spawnComponentSilent(__capType);
+          // Wait for cap object to appear in scene
+          const t0 = performance.now();
+          await new Promise((resolve) => {
+            (function tick() {
+              if (objectsByName.get(capName) || performance.now() - t0 > 6000) return resolve();
+              requestAnimationFrame(tick);
+            })();
+          });
+          // Snap cap center → tube place
+          __snapChildToParentAnchor(capName, tubeName, "place", "body", "center", [0,0,0,0,0,0], "body");
+          // Store attach metadata
+          const capAttach = {
+            parent_name: tubeName, parent_solid: "body", parent_anchor: "place",
+            parent_anchor_key: "place", child_solid: "body", child_anchor: "center",
+            child_anchor_key: "center", offset: [0,0,0,0,0,0]
+          };
+          window.builderState.components[capName] = Object.assign(
+            {}, window.builderState.components[capName] || {}, { attach: capAttach, capParent: tubeName }
+          );
+          const capObj = objectsByName.get(capName);
+          if (capObj) capObj.userData.builderAttach = capAttach;
+          socket.emit("upstream_update", { [capName]: { builder: { attach: capAttach } } });
+        } catch (ce) { console.warn("Cap auto-spawn failed:", ce); }
+      }
+
+      try { if (window.__updateConfigPreview) window.__updateConfigPreview(); } catch(e) {}
+    }
     catch (e) { console.error(e); showToast("Create failed: " + (e?.message||e)); }
   };
 
@@ -3778,6 +4260,7 @@ async function openCreatePanel(typeName) {
 
   card.appendChild(title);
   card.appendChild(hint);
+  card.appendChild(nameRow);
   card.appendChild(prev);
   card.appendChild(form);
   card.appendChild(row);
@@ -4005,8 +4488,18 @@ socket.emit("upstream_update", {
       } catch (e) {}
     };
     // two frames covers late-loaded meshes and any post-attach parent transform update
-    requestAnimationFrame(() => { __resnap(); requestAnimationFrame(__resnap); });
+    requestAnimationFrame(() => {
+      __resnap();
+      requestAnimationFrame(() => {
+        __resnap();
+        // Propagate move to any children (e.g. caps on tubes)
+        try { __propagateAnchoredSubtree(__cn); } catch(e) {}
+      });
+    });
   } catch (e) {}
+
+  // Immediate propagate for children already in scene
+  try { __propagateAnchoredSubtree(childName); } catch(e) {}
 
   if (window.builderState.components[childName]?.type === "fixture_plate") {
     window.builderState.lastFixturePlate = childName;
@@ -4016,6 +4509,7 @@ socket.emit("upstream_update", {
   window.builderState.pending = null;
   window.builderState.targetName = null;
   showToast("Snapped!");
+  try { if (window.__updateConfigPreview) window.__updateConfigPreview(); } catch(e) {}
   // After completing a joint, hide anchors + clear selection to reduce confusion.
   try { clearAnchors(); } catch(e) {}
   try { setSelected(null); } catch(e) {}
@@ -4267,25 +4761,44 @@ function buildConfigObject() {
     if (!meta) continue;
     const out = { type: meta.type };
 
-	// NOTE: Do not inject core defaults here.
-	// If the user wants has_rail/has_toolchanger/toolchanger_output/ip/robot_attach,
-	// they should be set at spawn-time (options) so the builder stays truthful to the scene.
+	// Core-specific defaults are injected below (simulation, ip, has_motion_plan, etc.).
     // Copy any additional options captured at create-time
     for (const [k, v] of Object.entries(meta)) {
-      if (k === "type" || k === "attach") continue;
+      if (k === "type" || k === "attach" || k === "capParent") continue;
       out[k] = v;
     }
 
-    // Core backward/forward compatibility:
-    // Some core versions use `has_toolchanger` while others use `has_tool_changer`.
-    // Emit BOTH (and keep them in sync) but ONLY for core.
+    // ── Core-specific config injection (ordered output) ──
     if (String(out.type) === "core") {
-      if (out.has_tool_changer === undefined && out.has_toolchanger !== undefined) {
-        out.has_tool_changer = out.has_toolchanger;
+      const hasRail = !!out.has_rail;
+      const hasCam  = !!out.has_camera;
+      const hasTC   = (out.has_tool_changer !== undefined) ? !!out.has_tool_changer : !!out.has_toolchanger;
+
+      // Rebuild `out` with deterministic field order matching expected config format
+      const ordered = { type: "core" };
+      ordered.simulation = true;
+      ordered.ip = (out.ip !== undefined && out.ip !== "") ? out.ip : "";
+      ordered.has_rail = hasRail;
+      ordered.has_camera = hasCam;
+      ordered.has_tool_changer = hasTC;
+      ordered.has_motion_plan = true;
+      // Always include camera_serial_number for manual fill
+      ordered.camera_serial_number = out.camera_serial_number || "";
+      // Rail-dependent fields
+      if (hasRail) {
+        ordered.rail_offset = (out.rail_offset !== undefined) ? out.rail_offset : 0;
+        ordered.robot_attach = out.robot_attach || {
+          rail_carriage_anchor: "hole_1",
+          robot_A0_anchor: "hole_0",
+          offset: [0, 0, 0, 0, 0, 0]
+        };
       }
-      if (out.has_toolchanger === undefined && out.has_tool_changer !== undefined) {
-        out.has_toolchanger = out.has_tool_changer;
-      }
+
+      // Replace out keys with ordered keys (preserve attach for later)
+      const savedAttach = out.attach;
+      for (const k of Object.keys(out)) delete out[k];
+      Object.assign(out, ordered);
+      if (savedAttach) out.attach = savedAttach;
     }
 
 
@@ -4336,17 +4849,161 @@ function saveConfig() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "config.yaml";
+  a.download = "config.j2";
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
 
-  showToast("Downloaded config.yaml");
+  showToast("Downloaded config.j2");
 }
 
 
 ensureBuilderBar();
+
+// --- Live Config YAML Viewer (right side) ---
+(function initConfigViewer(){
+  const viewer = document.createElement("div");
+  viewer.id = "configViewer";
+  viewer.style.position = "fixed";
+  viewer.style.right = "0";
+  viewer.style.top = "0";
+  viewer.style.width = "320px";
+  viewer.style.height = "100vh";
+  viewer.style.background = "rgba(20,24,32,0.95)";
+  viewer.style.borderLeft = "1px solid rgba(255,255,255,0.08)";
+  viewer.style.display = "flex";
+  viewer.style.flexDirection = "column";
+  viewer.style.zIndex = "9990";
+  viewer.style.fontFamily = "'SF Mono', 'Fira Code', 'Consolas', monospace";
+  // Fixed panel, no transition needed
+
+  // Header bar (fixed, no collapse)
+  const toggleBar = document.createElement("div");
+  toggleBar.style.display = "flex";
+  toggleBar.style.alignItems = "center";
+  toggleBar.style.justifyContent = "space-between";
+  toggleBar.style.padding = "10px 12px";
+  toggleBar.style.borderBottom = "1px solid rgba(255,255,255,0.08)";
+  toggleBar.style.userSelect = "none";
+  toggleBar.style.flexShrink = "0";
+
+  const toggleLabel = document.createElement("div");
+  toggleLabel.textContent = "Config Preview";
+  toggleLabel.style.color = "rgba(255,255,255,0.85)";
+  toggleLabel.style.fontWeight = "700";
+  toggleLabel.style.fontSize = "12px";
+  toggleLabel.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, Arial";
+
+  const copyBtn = document.createElement("button");
+  copyBtn.textContent = "Copy";
+  copyBtn.style.padding = "4px 10px";
+  copyBtn.style.borderRadius = "6px";
+  copyBtn.style.border = "1px solid rgba(255,255,255,0.15)";
+  copyBtn.style.background = "rgba(255,255,255,0.08)";
+  copyBtn.style.color = "rgba(255,255,255,0.75)";
+  copyBtn.style.cursor = "pointer";
+  copyBtn.style.fontSize = "11px";
+  copyBtn.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, Arial";
+  copyBtn.addEventListener("mouseenter", () => { copyBtn.style.background = "rgba(255,255,255,0.15)"; });
+  copyBtn.addEventListener("mouseleave", () => { copyBtn.style.background = "rgba(255,255,255,0.08)"; });
+  copyBtn.addEventListener("click", () => {
+    try {
+      const cfg = buildConfigObject();
+      const yaml = toYamlString(cfg);
+      navigator.clipboard.writeText(yaml).then(() => {
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+      });
+    } catch(e) {
+      copyBtn.textContent = "Error";
+      setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+    }
+  });
+
+  toggleBar.appendChild(toggleLabel);
+  toggleBar.appendChild(copyBtn);
+  viewer.appendChild(toggleBar);
+
+  // Code area
+  const codeWrap = document.createElement("div");
+  codeWrap.style.flex = "1";
+  codeWrap.style.overflow = "auto";
+  codeWrap.style.padding = "8px 12px";
+
+  const pre = document.createElement("pre");
+  pre.style.margin = "0";
+  pre.style.color = "rgba(255,255,255,0.82)";
+  pre.style.fontSize = "11px";
+  pre.style.lineHeight = "1.5";
+  pre.style.whiteSpace = "pre-wrap";
+  pre.style.wordBreak = "break-all";
+  pre.textContent = "# No components yet";
+  codeWrap.appendChild(pre);
+  viewer.appendChild(codeWrap);
+
+  // Config panel is fixed (always visible)
+
+  function updateConfigPreview() {
+    try {
+      const cfg = buildConfigObject();
+      const keys = Object.keys(cfg);
+      if (!keys.length) {
+        pre.textContent = "# No components yet";
+        return;
+      }
+      // Syntax highlight YAML
+      const yaml = toYamlString(cfg);
+      // Simple colorize: keys in blue, strings in green, numbers in orange, comments in gray
+      const lines = yaml.split("\n");
+      let html = "";
+      for (const line of lines) {
+        if (line.trim().startsWith("#")) {
+          html += `<span style="color:rgba(255,255,255,0.35)">${escHtml(line)}</span>\n`;
+        } else {
+          // colorize key: value
+          const m = line.match(/^(\s*)([\w_.-]+)(:)(.*)/);
+          if (m) {
+            const indent = m[1];
+            const key = m[2];
+            const colon = m[3];
+            let val = m[4];
+            let valHtml = escHtml(val);
+            // Colorize values
+            if (val.trim().startsWith('"') || val.trim().startsWith("'")) {
+              valHtml = `<span style="color:#98c379">${escHtml(val)}</span>`;
+            } else if (val.trim().startsWith("[")) {
+              valHtml = `<span style="color:#d19a66">${escHtml(val)}</span>`;
+            } else if (/^\s*-?\d/.test(val)) {
+              valHtml = `<span style="color:#d19a66">${escHtml(val)}</span>`;
+            } else if (val.trim() === "true" || val.trim() === "false") {
+              valHtml = `<span style="color:#e5c07b">${escHtml(val)}</span>`;
+            } else if (val.trim() === "null") {
+              valHtml = `<span style="color:rgba(255,255,255,0.4)">${escHtml(val)}</span>`;
+            }
+            html += `${escHtml(indent)}<span style="color:#61afef">${escHtml(key)}</span><span style="color:rgba(255,255,255,0.5)">${escHtml(colon)}</span>${valHtml}\n`;
+          } else {
+            html += escHtml(line) + "\n";
+          }
+        }
+      }
+      pre.innerHTML = html;
+    } catch(e) {
+      pre.textContent = "# Error generating config\n# " + (e?.message || e);
+    }
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  // Update every 1.5 seconds
+  setInterval(updateConfigPreview, 1500);
+  // Also update on key actions
+  window.__updateConfigPreview = updateConfigPreview;
+
+  document.body.appendChild(viewer);
+})();
 
       // --- Animate (keep anchors & badges sticky) ---
       function animate() {
@@ -4781,7 +5438,7 @@ async function runPatternFill() {
   const meshes = [];
   for (const s of (blueprint.solids || [])) {
     if (s?.solid && s?.anchors) anchorsBySolid[s.solid] = s.anchors;
-    if (s?.glb) meshes.push({ meshUrl: s.glb, pose: s.pose || [0,0,0,0,0,0], solidName: s.solid });
+    if (s?.glb) meshes.push({ meshUrl: s.glb, pose: s.pose || [0,0,0,0,0,0], solidName: s.solid, collisionLocal: s.collisionLocal || [] });
   }
   const childSolid = p.sourceSolid || (Object.keys(anchorsBySolid)[0] || "solid_0");
   const childAnchors = anchorsBySolid[childSolid] || {};
@@ -4894,7 +5551,7 @@ function __rpChildAnchorLocalPose(childObj, childAnchorName) {
 function rectPatternHandleSecondAnchor(ownerName, anchorName) {
   const rp = window.builderState?.rectPattern;
   const ui = window.builderState?.rectPatternUi;
-  if (!rp || !ui || !rp.seedName) { showToast("Pick a seed object first."); return; }
+  if (!rp || !ui || !rp.seedName) { showToast("Pick the first object first."); return; }
   if (!ownerName || !anchorName) { showToast("Select a valid anchor."); return; }
 
   const w = __rpAnchorWorldPose(ownerName, anchorName);
@@ -4915,7 +5572,7 @@ function rectPatternHandleSecondAnchor(ownerName, anchorName) {
 
   // UI update
   ui.pointBox.dataset.state = "ok";
-  ui.pointBox.textContent = `2nd anchor ✓ (${ownerName}:${anchorName})`;
+  ui.pointBox.textContent = `Second anchor ✓ (${ownerName}:${anchorName})`;
   ui.pointBox.style.borderColor = "rgba(0,140,0,0.55)";
   ui.pointBox.style.background = "rgba(0,140,0,0.08)";
   ui.pointClear.style.display = "inline-flex";
@@ -4923,8 +5580,10 @@ function rectPatternHandleSecondAnchor(ownerName, anchorName) {
   window.builderState.mode = "IDLE";
   try { window.hideBanner?.(); } catch(e) {}
   try { clearAnchors?.(); } catch(e) {}
-  showToast("2nd anchor set.");
+  showToast("Second anchor set.");
 }
+
+// __rpAutoOpenAnchorList is now replaced by inline populateAnchorList in startRectPattern
 
 function closeRectPatternPanel() {
   try { window.hideBanner?.(); } catch(e) {}
@@ -4941,7 +5600,7 @@ function startRectPattern() {
   const panel = document.createElement("div");
   panel.id = "rectPatternPanel";
   panel.style.position = "fixed";
-  panel.style.right = "18px";
+  panel.style.right = "340px";
   panel.style.top = "18px";
   panel.style.width = "360px";
   panel.style.maxHeight = "85vh";
@@ -4965,7 +5624,7 @@ function startRectPattern() {
   hint.style.fontSize = "12px";
   hint.style.opacity = "0.75";
   hint.style.marginBottom = "10px";
-  hint.textContent = "Pick a seed object (must be anchored), then pick a 2nd anchor. Enter counts and Fill.";
+  hint.textContent = "Pick a first object, then pick a second object + anchor. Enter counts and Fill.";
   panel.appendChild(hint);
 
   function mkRow(labelText) {
@@ -5022,20 +5681,24 @@ function startRectPattern() {
     return { wrap, box, clearBtn };
   }
 
-  // Seed object picker
-  const r1 = mkRow("Seed object");
-  const seed = mkSelectBox("Select a valid object…");
+  // First object picker
+  const r1 = mkRow("First object");
+  const seed = mkSelectBox("Select first object…");
   r1.row.appendChild(seed.wrap);
   panel.appendChild(r1.row);
 
   seed.box.addEventListener("click", () => {
     window.builderState.mode = "RECTPATTERN_PICK_OBJECT";
-    try { window.showBanner?.("Click a valid anchored object (the one you want to pattern)."); } catch(e) {}
+    // Blue highlight for selection state
+    seed.box.style.borderColor = "rgba(60,130,255,0.7)";
+    seed.box.style.background = "rgba(60,130,255,0.08)";
+    seed.box.textContent = "Click an object in 3D...";
+    try { window.showBanner?.("Click a valid object (the one you want to pattern)."); } catch(e) {}
   });
   seed.clearBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     seed.box.dataset.state = "empty";
-    seed.box.textContent = "Select a valid object…";
+    seed.box.textContent = "Select first object…";
     seed.box.style.borderColor = "rgba(0,0,0,0.18)";
     seed.box.style.background = "rgba(0,0,0,0.02)";
     seed.clearBtn.style.display = "none";
@@ -5043,170 +5706,182 @@ function startRectPattern() {
     window.builderState.rectPattern = null;
     // reset point
     point.box.dataset.state = "empty";
-    point.box.textContent = "Select 2nd anchor…";
+    point.box.textContent = "Select second object…";
     point.box.style.borderColor = "rgba(0,0,0,0.18)";
     point.box.style.background = "rgba(0,0,0,0.02)";
     point.clearBtn.style.display = "none";
-    btnAnchorList.disabled = true;
-    btnAnchorList.style.opacity = "0.6";
+    resetAnchorList();
   });
 
-  // Second point picker
-  const r2 = mkRow("2nd anchor");
-  const point = mkSelectBox("Select 2nd anchor…");
+  // Second object picker
+  const r2 = mkRow("Second object");
+  const point = mkSelectBox("Select second object…");
   r2.row.appendChild(point.wrap);
   panel.appendChild(r2.row);
 
-  // Optional: choose anchor from list (enabled after selecting target object for 2nd anchor)
-  const r2b = document.createElement("div");
-  r2b.style.display = "flex";
-  r2b.style.justifyContent = "flex-end";
-  r2b.style.marginTop = "-4px";
-  r2b.style.marginBottom = "8px";
+  // Permanent inline anchor list (starts empty, populates when second object is picked)
+  const anchorListContainer = document.createElement("div");
+  anchorListContainer.id = "rpInlineAnchorList";
+  anchorListContainer.style.border = "1px solid rgba(0,0,0,0.08)";
+  anchorListContainer.style.borderRadius = "12px";
+  anchorListContainer.style.overflow = "hidden";
+  anchorListContainer.style.marginBottom = "8px";
 
-  const btnAnchorList = document.createElement("button");
-  btnAnchorList.textContent = "Choose anchor from list";
-  btnAnchorList.disabled = true;
-  btnAnchorList.style.padding = "8px 10px";
-  btnAnchorList.style.borderRadius = "12px";
-  btnAnchorList.style.border = "1px solid rgba(0,0,0,0.18)";
-  btnAnchorList.style.background = "rgba(255,255,255,0.9)";
-  btnAnchorList.style.cursor = "pointer";
-  btnAnchorList.style.fontSize = "12px";
-  btnAnchorList.style.opacity = "0.6";
-  r2b.appendChild(btnAnchorList);
-  panel.appendChild(r2b);
+  const anchorListHeader = document.createElement("div");
+  anchorListHeader.style.display = "flex";
+  anchorListHeader.style.alignItems = "center";
+  anchorListHeader.style.justifyContent = "space-between";
+  anchorListHeader.style.fontSize = "12px";
+  anchorListHeader.style.fontWeight = "700";
+  anchorListHeader.style.padding = "8px 10px";
+  anchorListHeader.style.background = "rgba(0,0,0,0.03)";
+  anchorListHeader.style.borderBottom = "1px solid rgba(0,0,0,0.06)";
+  const anchorHeaderTitle = document.createElement("span");
+  anchorHeaderTitle.textContent = "Anchors";
+  const anchorHeaderCount = document.createElement("span");
+  anchorHeaderCount.textContent = "";
+  anchorHeaderCount.style.fontWeight = "400";
+  anchorHeaderCount.style.opacity = "0.6";
+  anchorHeaderCount.style.fontSize = "11px";
+  anchorListHeader.appendChild(anchorHeaderTitle);
+  anchorListHeader.appendChild(anchorHeaderCount);
+  anchorListContainer.appendChild(anchorListHeader);
 
-  function __rpOpenAnchorListModal(ownerName) {
+  const anchorSearchInput = document.createElement("input");
+  anchorSearchInput.type = "text";
+  anchorSearchInput.placeholder = "Filter anchors...";
+  anchorSearchInput.style.width = "100%";
+  anchorSearchInput.style.boxSizing = "border-box";
+  anchorSearchInput.style.padding = "8px 10px";
+  anchorSearchInput.style.border = "none";
+  anchorSearchInput.style.borderBottom = "1px solid rgba(0,0,0,0.06)";
+  anchorSearchInput.style.fontSize = "12px";
+  anchorSearchInput.style.outline = "none";
+  anchorSearchInput.style.display = "none";
+  anchorListContainer.appendChild(anchorSearchInput);
+
+  const anchorListDiv = document.createElement("div");
+  anchorListDiv.style.maxHeight = "300px";
+  anchorListDiv.style.overflow = "auto";
+  anchorListDiv.style.background = "rgba(0,0,0,0.01)";
+  anchorListContainer.appendChild(anchorListDiv);
+
+  // Empty state
+  const anchorEmpty = document.createElement("div");
+  anchorEmpty.textContent = "Select a second object to see anchors";
+  anchorEmpty.style.padding = "12px 10px";
+  anchorEmpty.style.fontSize = "12px";
+  anchorEmpty.style.opacity = "0.45";
+  anchorEmpty.style.textAlign = "center";
+  anchorListDiv.appendChild(anchorEmpty);
+
+  // Function to populate anchors in-place
+  let currentAnchorNames = [];
+  function populateAnchorList(ownerName) {
     const owner = objectsByName.get(ownerName);
-    if (!owner) { showToast("Target object missing."); return; }
+    if (!owner) return;
     const anchors = __rpGetAnchorsForObj(owner);
-    const names = Object.keys(anchors || {}).sort((a,b)=>a.localeCompare(b, undefined, {numeric:true}));
-    if (!names.length) { showToast("No anchors on target object."); return; }
+    // Only show grid-style anchors (letter + number, e.g. A1, H12) since
+    // non-grid anchors (center, hole_0, corner_3, etc.) can't be used for pattern fill.
+    const __isGridAnchor = (s) => /^[A-Za-z]\d{1,4}$/.test(String(s).trim());
+    currentAnchorNames = Object.keys(anchors || {}).filter(__isGridAnchor).sort((a,b)=>a.localeCompare(b, undefined, {numeric:true}));
 
-    // Overlay
-    const overlay = document.createElement("div");
-    overlay.id = "rectPatternAnchorListOverlay";
-    overlay.style.position = "fixed";
-    overlay.style.inset = "0";
-    overlay.style.background = "rgba(0,0,0,0.28)";
-    overlay.style.zIndex = "999999";
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    // Style the container to show it's active
+    anchorListContainer.style.border = "1px solid rgba(60,130,255,0.25)";
+    anchorListContainer.style.background = "rgba(60,130,255,0.02)";
+    anchorListHeader.style.background = "rgba(60,130,255,0.06)";
+    anchorListHeader.style.borderBottom = "1px solid rgba(60,130,255,0.12)";
+    anchorHeaderTitle.textContent = `Anchors on ${ownerName}`;
+    anchorHeaderCount.textContent = `${currentAnchorNames.length} available`;
+    anchorSearchInput.style.display = "";
+    anchorSearchInput.value = "";
 
-    const modal = document.createElement("div");
-    modal.style.position = "absolute";
-    modal.style.right = "18px";
-    modal.style.top = "90px";
-    modal.style.width = "360px";
-    modal.style.maxHeight = "60vh";
-    modal.style.overflow = "hidden";
-    modal.style.background = "rgba(255,255,255,0.98)";
-    modal.style.border = "1px solid rgba(0,0,0,0.12)";
-    modal.style.borderRadius = "16px";
-    modal.style.boxShadow = "0 18px 60px rgba(0,0,0,0.22)";
-    modal.style.padding = "12px";
-    modal.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif";
-
-    const h = document.createElement("div");
-    h.textContent = `Anchors on ${ownerName}`;
-    h.style.fontWeight = "700";
-    h.style.marginBottom = "8px";
-    modal.appendChild(h);
-
-    const search = document.createElement("input");
-    search.type = "text";
-    search.placeholder = "Filter anchors…";
-    search.style.width = "100%";
-    search.style.boxSizing = "border-box";
-    search.style.padding = "10px 10px";
-    search.style.borderRadius = "12px";
-    search.style.border = "1px solid rgba(0,0,0,0.18)";
-    search.style.marginBottom = "8px";
-    modal.appendChild(search);
-
-    const list = document.createElement("div");
-    list.style.maxHeight = "45vh";
-    list.style.overflow = "auto";
-    list.style.border = "1px solid rgba(0,0,0,0.10)";
-    list.style.borderRadius = "12px";
-    list.style.background = "rgba(0,0,0,0.02)";
-    modal.appendChild(list);
-
-    function render(filterText="") {
-      list.innerHTML = "";
-      const f = (filterText||"").trim().toLowerCase();
-      const shown = names.filter(n => !f || n.toLowerCase().includes(f));
-      for (const n of shown) {
-        const item = document.createElement("div");
-        item.textContent = n;
-        item.style.padding = "10px 10px";
-        item.style.cursor = "pointer";
-        item.style.fontSize = "12px";
-        item.style.borderBottom = "1px solid rgba(0,0,0,0.06)";
-        item.addEventListener("mouseenter", ()=> item.style.background = "rgba(0,0,0,0.05)");
-        item.addEventListener("mouseleave", ()=> item.style.background = "transparent");
-        item.addEventListener("click", () => {
-          overlay.remove();
-          rectPatternHandleSecondAnchor(ownerName, n);
-        });
-        list.appendChild(item);
-      }
-      if (!shown.length) {
-        const empty = document.createElement("div");
-        empty.textContent = "No matches.";
-        empty.style.padding = "10px";
-        empty.style.fontSize = "12px";
-        empty.style.opacity = "0.7";
-        list.appendChild(empty);
-      }
-    }
-    render();
-    search.addEventListener("input", ()=>render(search.value));
-
-    const foot = document.createElement("div");
-    foot.style.display = "flex";
-    foot.style.justifyContent = "flex-end";
-    foot.style.marginTop = "10px";
-    const close = document.createElement("button");
-    close.textContent = "Close";
-    close.style.padding = "8px 10px";
-    close.style.borderRadius = "12px";
-    close.style.border = "1px solid rgba(0,0,0,0.18)";
-    close.style.background = "rgba(255,255,255,0.9)";
-    close.style.cursor = "pointer";
-    close.addEventListener("click", ()=>overlay.remove());
-    foot.appendChild(close);
-    modal.appendChild(foot);
-
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-    search.focus();
+    renderAnchorItems("");
+    setTimeout(() => { try { anchorSearchInput.focus(); } catch(_) {} }, 50);
   }
 
-  btnAnchorList.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const rp = window.builderState.rectPattern;
-    if (!rp?.secondOwnerName) { showToast("Pick the target object first."); return; }
-    __rpOpenAnchorListModal(rp.secondOwnerName);
-  });
+  function renderAnchorItems(filterText) {
+    anchorListDiv.innerHTML = "";
+    const f = (filterText||"").trim().toLowerCase();
+    const shown = currentAnchorNames.filter(n => !f || n.toLowerCase().includes(f));
+    for (const n of shown) {
+      const item = document.createElement("div");
+      item.textContent = n;
+      item.style.padding = "8px 10px";
+      item.style.cursor = "pointer";
+      item.style.fontSize = "12px";
+      item.style.borderBottom = "1px solid rgba(0,0,0,0.04)";
+      item.style.transition = "background 0.1s ease";
+      item.addEventListener("mouseenter", () => { item.style.background = "rgba(60,130,255,0.12)"; });
+      item.addEventListener("mouseleave", () => { item.style.background = "transparent"; });
+      item.addEventListener("click", () => {
+        const rp = window.builderState.rectPattern;
+        const ownerName = rp?.secondOwnerName;
+        if (ownerName) {
+          rectPatternHandleSecondAnchor(ownerName, n);
+        }
+      });
+      anchorListDiv.appendChild(item);
+    }
+    if (!shown.length) {
+      const empty = document.createElement("div");
+      empty.textContent = currentAnchorNames.length ? "No matches." : "No anchors available.";
+      empty.style.padding = "12px 10px";
+      empty.style.fontSize = "12px";
+      empty.style.opacity = "0.45";
+      empty.style.textAlign = "center";
+      anchorListDiv.appendChild(empty);
+    }
+    anchorHeaderCount.textContent = f ? `${shown.length} of ${currentAnchorNames.length}` : `${currentAnchorNames.length} available`;
+  }
+
+  function resetAnchorList() {
+    currentAnchorNames = [];
+    anchorListContainer.style.border = "1px solid rgba(0,0,0,0.08)";
+    anchorListContainer.style.background = "";
+    anchorListHeader.style.background = "rgba(0,0,0,0.03)";
+    anchorListHeader.style.borderBottom = "1px solid rgba(0,0,0,0.06)";
+    anchorHeaderTitle.textContent = "Anchors";
+    anchorHeaderCount.textContent = "";
+    anchorSearchInput.style.display = "none";
+    anchorSearchInput.value = "";
+    anchorListDiv.innerHTML = "";
+    const emptyMsg = document.createElement("div");
+    emptyMsg.textContent = "Select a second object to see anchors";
+    emptyMsg.style.padding = "12px 10px";
+    emptyMsg.style.fontSize = "12px";
+    emptyMsg.style.opacity = "0.45";
+    emptyMsg.style.textAlign = "center";
+    anchorListDiv.appendChild(emptyMsg);
+  }
+
+  anchorSearchInput.addEventListener("input", () => renderAnchorItems(anchorSearchInput.value));
+
+  panel.appendChild(anchorListContainer);
+
+  // Keep btnAnchorList as a no-op reference for legacy code
+  const btnAnchorList = { disabled: true, style: { opacity: "0.6", display: "none" } };
 
   point.box.addEventListener("click", () => {
     const rp = window.builderState.rectPattern;
-    if (!rp || !rp.seedName) { showToast("Pick a seed object first."); return; }
+    if (!rp || !rp.seedName) { showToast("Pick the first object first."); return; }
     window.builderState.mode = "RECTPATTERN_PICK_SECOND_OBJECT";
-    try { window.showBanner?.("Click the target object, then click an anchor on that object."); } catch(e) {}
+    // Blue highlight for selection state
+    point.box.style.borderColor = "rgba(60,130,255,0.7)";
+    point.box.style.background = "rgba(60,130,255,0.08)";
+    point.box.textContent = "Click a second object in 3D...";
+    try { window.showBanner?.("Click the second object, then pick an anchor."); } catch(e) {}
   });
   point.clearBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     const rp = window.builderState.rectPattern;
     if (rp) { rp.bAnchor = null; rp.delta = null; rp.secondOwnerName = null; }
     point.box.dataset.state = "empty";
-    point.box.textContent = "Select 2nd anchor…";
+    point.box.textContent = "Select second object…";
     point.box.style.borderColor = "rgba(0,0,0,0.18)";
     point.box.style.background = "rgba(0,0,0,0.02)";
     point.clearBtn.style.display = "none";
-    btnAnchorList.disabled = true;
-    btnAnchorList.style.opacity = "0.6";
+    resetAnchorList();
   });
 
   // Counts
@@ -5287,8 +5962,8 @@ function startRectPattern() {
 
   btnFill.addEventListener("click", async () => {
     const rp = window.builderState.rectPattern;
-    if (!rp || !rp.seedName || !rp.aAnchor?.pos) { showToast("Pick a seed object."); return; }
-    if (!rp.bAnchor?.pos || !rp.delta) { showToast("Pick the 2nd anchor."); return; }
+    if (!rp || !rp.seedName || !rp.aAnchor?.pos) { showToast("Pick the first object."); return; }
+    if (!rp.bAnchor?.pos || !rp.delta) { showToast("Pick the second anchor."); return; }
 
     // --- Grid fill mode (A1..Z500 style) ---
     // If the seed is anchored to the same target object as the 2nd anchor, and both anchors
@@ -5415,7 +6090,7 @@ function startRectPattern() {
       return;
     }
     if (!rp.bAnchor || !rp.bAnchor.ownerName || !rp.bAnchor.anchorName) {
-      showToast("Pick the 2nd anchor first.");
+      showToast("Pick the second anchor first.");
       return;
     }
     if (!canGridFill) {
@@ -5525,12 +6200,34 @@ function startRectPattern() {
       }
 
       if (!targets.length) {
-        window.builderState.suspendUndo = __prevSuspend;
         showToast("No anchors found in that range on the target object.");
         return;
       }
 
       showToast(`Grid fill: anchoring ${targets.length} instance(s)…`);
+
+      // Detect cap children of the seed (tube→cap auto-spawn pairs)
+      // and capture the cap-relative-to-tube world offset from the seed pair.
+      // This avoids needing to look up anchors on clones (which may not have
+      // settled yet due to async GLTF loads / server echo race conditions).
+      const __seedCapChildren = [];
+      for (const [cn, cm] of Object.entries(window.builderState.components || {})) {
+        if (!cm || !cm.attach || cm.attach.parent_name !== rp.seedName) continue;
+        if (!String(cm.type || "").startsWith("cap_")) continue;
+        const seedTubeObj = objectsByName.get(rp.seedName);
+        const seedCapObj  = objectsByName.get(cn);
+        let relPos = null, relQuat = null;
+        if (seedTubeObj && seedCapObj) {
+          const tWP = new THREE.Vector3(); seedTubeObj.getWorldPosition(tWP);
+          const tWQ = new THREE.Quaternion(); seedTubeObj.getWorldQuaternion(tWQ);
+          const cWP = new THREE.Vector3(); seedCapObj.getWorldPosition(cWP);
+          const cWQ = new THREE.Quaternion(); seedCapObj.getWorldQuaternion(cWQ);
+          const tWQInv = tWQ.clone().invert();
+          relPos  = cWP.clone().sub(tWP).applyQuaternion(tWQInv);
+          relQuat = tWQInv.clone().multiply(cWQ);
+        }
+        __seedCapChildren.push({ name: cn, type: cm.type, attach: cm.attach, relPos, relQuat });
+      }
 
       // Spawn is async (server -> client GLTF load). We must wait until the
       // spawned object exists in objectsByName before snapping, otherwise the
@@ -5598,6 +6295,60 @@ function startRectPattern() {
 
           // Mark pattern lineage so deleting the seed can delete its pattern siblings.
           window.builderState.components[name] = Object.assign({}, window.builderState.components[name]||{}, { patternParent: rp.seedName, patternMode: "GRID_FILL" });
+
+          // Clone cap children (tube→cap pairs) onto this new clone.
+          // Instead of calling __snapChildToParentAnchor on the clone (which
+          // races with server echo scene_updates that reset the cap position),
+          // we use the precomputed world-offset from the seed tube→cap pair
+          // and apply it directly to the tube clone's current transform.
+          const tubeCloneName = name;
+          for (const capChild of __seedCapChildren) {
+            try {
+              const capCloneName = await spawnComponentSilent(capChild.type);
+              const capCloneObj = await __waitForObject(capCloneName);
+              if (!capCloneObj) continue;
+
+              const tubeCloneObj = objectsByName.get(tubeCloneName);
+              if (tubeCloneObj && capChild.relPos && capChild.relQuat) {
+                const tWP = new THREE.Vector3(); tubeCloneObj.getWorldPosition(tWP);
+                const tWQ = new THREE.Quaternion(); tubeCloneObj.getWorldQuaternion(tWQ);
+                const capWorldPos = capChild.relPos.clone().applyQuaternion(tWQ).add(tWP);
+                const capWorldQ   = tWQ.clone().multiply(capChild.relQuat);
+                capCloneObj.position.copy(capWorldPos);
+                capCloneObj.quaternion.copy(capWorldQ);
+                // Guard against server echo overwriting this position
+                capCloneObj.userData.__builderPoseGuard = performance.now();
+                const rod = window.quaternionToRodriguesDeg
+                  ? window.quaternionToRodriguesDeg(capWorldQ) : [0,0,0];
+                const pose = [capWorldPos.x, capWorldPos.y, capWorldPos.z, rod[0]||0, rod[1]||0, rod[2]||0];
+                socket.emit("upstream_update", { [capCloneName]: { pose } });
+              }
+
+              const __pAnchor = capChild.attach.parent_anchor || "place";
+              const __cSolid  = capChild.attach.child_solid || "body";
+              const __cAnchor = capChild.attach.child_anchor || "center";
+              const __pSolid  = capChild.attach.parent_solid || "body";
+              const capAttach = {
+                parent_name: tubeCloneName, parent_solid: __pSolid,
+                parent_anchor: __pAnchor,
+                parent_anchor_key: capChild.attach.parent_anchor_key || __pAnchor,
+                child_solid: __cSolid,
+                child_anchor: __cAnchor,
+                child_anchor_key: capChild.attach.child_anchor_key || __cAnchor,
+                offset: [0,0,0,0,0,0]
+              };
+              window.builderState.components[capCloneName] = Object.assign(
+                {}, window.builderState.components[capCloneName] || {},
+                { attach: capAttach, capParent: tubeCloneName, patternParent: rp.seedName, patternMode: "GRID_FILL" }
+              );
+              if (capCloneObj.userData) capCloneObj.userData.builderAttach = capAttach;
+              socket.emit("upstream_update", { [capCloneName]: { builder: { attach: capAttach } } });
+              __patternNames.push(capCloneName);
+              try { __patternSpecs[capCloneName] = __deepClone(window.builderState.specs?.[capCloneName] || {}); } catch(e) {}
+              try { __patternMetas[capCloneName] = __deepClone(window.builderState.components?.[capCloneName] || {}); } catch(e) {}
+            } catch (capErr) { console.warn("gridfill: cap clone failed", capErr); }
+          }
+
           // capture final spec/meta for redo
           __patternNames.push(name);
           try { __patternSpecs[name] = __deepClone(window.builderState.specs?.[name] || {}); } catch(e) {}
@@ -5655,6 +6406,66 @@ function startRectPattern() {
       }
     }
 
+    // Safety: ensure seed object was not accidentally removed during fill
+    if (rp.seedName && !objectsByName.has(rp.seedName)) {
+      console.warn("Pattern fill: seed object was lost, restoring...");
+      const seedSpec = window.builderState.specs?.[rp.seedName];
+      if (seedSpec) {
+        try { upsertObject(rp.seedName, seedSpec); } catch(e) { console.error(e); }
+      }
+    }
+
+    // Deferred resnap for cap clones: the server echoes scene_update with the
+    // cap's default spawn pose, overwriting our position set inside the loop.
+    // Wait for all echoes to settle, then reposition using the seed pair's
+    // world-space offset (does NOT depend on clone anchor lookups).
+    {
+      const __capsToResnap = [];
+      for (const [cn, cm] of Object.entries(window.builderState.components || {})) {
+        if (!cm?.capParent || !cm?.attach) continue;
+        if (cm.patternParent !== rp.seedName) continue;
+        __capsToResnap.push({ capName: cn, tubeName: cm.capParent });
+      }
+      if (__capsToResnap.length) {
+        // Compute cap-relative-to-tube offset from the seed pair (still in scene)
+        const seedTubeObj = objectsByName.get(rp.seedName);
+        let __seedCapName = null;
+        for (const [cn, cm] of Object.entries(window.builderState.components || {})) {
+          if (cm?.attach?.parent_name === rp.seedName && String(cm.type||"").startsWith("cap_")) { __seedCapName = cn; break; }
+        }
+        const seedCapObj = __seedCapName ? objectsByName.get(__seedCapName) : null;
+
+        if (seedTubeObj && seedCapObj) {
+          const stWP = new THREE.Vector3(); seedTubeObj.getWorldPosition(stWP);
+          const stWQ = new THREE.Quaternion(); seedTubeObj.getWorldQuaternion(stWQ);
+          const scWP = new THREE.Vector3(); seedCapObj.getWorldPosition(scWP);
+          const scWQ = new THREE.Quaternion(); seedCapObj.getWorldQuaternion(scWQ);
+          const stWQInv = stWQ.clone().invert();
+          const relPos  = scWP.clone().sub(stWP).applyQuaternion(stWQInv);
+          const relQuat = stWQInv.clone().multiply(scWQ);
+
+          await new Promise(r => setTimeout(r, 800));
+          for (const { capName, tubeName } of __capsToResnap) {
+            try {
+              const capObj  = objectsByName.get(capName);
+              const tubeObj = objectsByName.get(tubeName);
+              if (!capObj || !tubeObj) continue;
+              const tWP = new THREE.Vector3(); tubeObj.getWorldPosition(tWP);
+              const tWQ = new THREE.Quaternion(); tubeObj.getWorldQuaternion(tWQ);
+              const capPos = relPos.clone().applyQuaternion(tWQ).add(tWP);
+              const capQ   = tWQ.clone().multiply(relQuat);
+              capObj.position.copy(capPos);
+              capObj.quaternion.copy(capQ);
+              capObj.userData.__builderPoseGuard = performance.now();
+              const rod = window.quaternionToRodriguesDeg ? window.quaternionToRodriguesDeg(capQ) : [0,0,0];
+              const pose = [capPos.x, capPos.y, capPos.z, rod[0]||0, rod[1]||0, rod[2]||0];
+              socket.emit("upstream_update", { [capName]: { pose } });
+            } catch(e) { console.warn("deferred cap resnap:", capName, e); }
+          }
+        }
+      }
+    }
+
     showToast(`Patterned ${spawned} instance(s).`);
     closeRectPatternPanel();
   });
@@ -5666,6 +6477,8 @@ function startRectPattern() {
     pointBox: point.box,
     pointClear: point.clearBtn,
     anchorListBtn: btnAnchorList,
+    populateAnchorList,
+    resetAnchorList,
     nx: cx.input, ny: cy.input, nz: cz.input,
     hint
   };
@@ -5716,7 +6529,11 @@ function startRectPattern() {
     #infoName  { background: #0b3d91; }   /* Blue */
     #infoType  { background: #4d8f00; }   /* Green */
     #infoSolid { background: #8a6d00; }   /* Gold */
-  </style>
+  
+
+</style>
+
+
 
 </body>
 </html>

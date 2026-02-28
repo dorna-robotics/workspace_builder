@@ -34,9 +34,70 @@ def _cache_solid_anchors(obj, anchors):
 
 # optional: pose conversion for internal solid local transforms
 try:
-    from dorna2.pose import T_to_xyzabc
+    from dorna2.pose import T_to_xyzabc, xyzabc_to_T, inv_T
 except Exception:
     T_to_xyzabc = None
+    xyzabc_to_T = None
+    inv_T = None
+
+# Fallback minimal pose helpers if dorna2.pose doesn't expose them.
+def _rodrigues_deg_to_R(rx, ry, rz):
+    if np is None:
+        return None
+    ang = float((rx*rx + ry*ry + rz*rz) ** 0.5)
+    if ang == 0.0:
+        return np.eye(3)
+    ax, ay, az = rx/ang, ry/ang, rz/ang
+    th = ang * (np.pi/180.0)
+    K = np.array([[0, -az, ay],
+                  [az, 0, -ax],
+                  [-ay, ax, 0]], dtype=float)
+    I = np.eye(3)
+    return I + np.sin(th)*K + (1-np.cos(th))*(K@K)
+
+
+def _xyzabc_to_T_fallback(pose):
+    if np is None:
+        return None
+    if not isinstance(pose, (list, tuple)) or len(pose) != 6:
+        return None
+    x,y,z,a,b,c = [float(v) for v in pose]
+    R = _rodrigues_deg_to_R(a,b,c)
+    if R is None:
+        return None
+    T = np.eye(4)
+    T[:3,:3] = R
+    T[:3,3] = [x,y,z]
+    return T
+
+
+def _inv_T_fallback(T):
+    if np is None or T is None:
+        return None
+    R = T[:3,:3]
+    t = T[:3,3]
+    Ti = np.eye(4)
+    Ti[:3,:3] = R.T
+    Ti[:3,3] = -(R.T @ t)
+    return Ti
+
+
+def _xyzabc_to_T(pose):
+    if xyzabc_to_T is not None:
+        try:
+            return xyzabc_to_T(pose)
+        except Exception:
+            pass
+    return _xyzabc_to_T_fallback(pose)
+
+
+def _inv_T(T):
+    if inv_T is not None:
+        try:
+            return inv_T(T)
+        except Exception:
+            pass
+    return _inv_T_fallback(T)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(BASE_DIR)
@@ -572,12 +633,43 @@ def instantiate_component_blueprint(type_name: str, options: dict):
             # Robust anchor extraction (works across dorna2 versions and our shim)
             anchors = extract_solid_anchors(solid)
 
+            # Collision boxes (local to solid frame; UI parents them so they follow edits)
+            collision_local = []
+            try:
+                c_box_data = getattr(solid, "collision_box", None)
+                boxes = []
+                if c_box_data:
+                    if isinstance(c_box_data, dict):
+                        if solid_name in c_box_data:
+                            boxes = c_box_data.get(solid_name) or []
+                        elif "boxes" in c_box_data:
+                            boxes = c_box_data.get("boxes") or []
+                        elif len(c_box_data) == 1:
+                            boxes = next(iter(c_box_data.values())) or []
+                    elif isinstance(c_box_data, list):
+                        boxes = c_box_data
+
+                for box in boxes or []:
+                    if not isinstance(box, dict):
+                        continue
+                    bp = box.get("pose")
+                    bs = box.get("scale")
+                    if not (isinstance(bp, (list, tuple)) and len(bp) == 6 and isinstance(bs, (list, tuple)) and len(bs) == 3):
+                        continue
+                    collision_local.append({
+                        "pose": [float(bp[0]), float(bp[1]), float(bp[2]), float(bp[3]), float(bp[4]), float(bp[5])],
+                        "scale": [float(bs[0]), float(bs[1]), float(bs[2])],
+                    })
+            except Exception:
+                collision_local = []
+
             solids.append({
                 "solid": solid_name,
                 "solid_type": stype,
                 "glb": glb_url,
                 "pose": pose,
                 "anchors": anchors,
+                "collisionLocal": collision_local,
             })
 
     return {"solids": solids}
@@ -588,7 +680,7 @@ STATIC_DIR = os.path.join(PARENT_DIR, "static")
 WEB_DIR = os.path.join(BASE_DIR, "web")
 
 OUT_DIR = os.path.join(PARENT_DIR, "projects", "builder")
-OUT_PATH = os.path.join(OUT_DIR, "config.yaml")
+OUT_PATH = os.path.join(OUT_DIR, "config.j2")
 
 
 class IndexHandler(tornado.web.RequestHandler):
