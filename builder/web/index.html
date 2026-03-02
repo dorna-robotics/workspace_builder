@@ -2216,6 +2216,7 @@ async function spawnComponentSilent(type, meta=null, options=null) {
   const spec = {
     meshUrl: meshes ? null : glb,
     meshes: meshes,
+    collisionLocal: meshes ? null : (collisionLocalSingle || []),
     pose: [0,0,((type === "fixture_plate" && !window.builderState.lastFixturePlate) ? 0 : 300),0,0,0],
     visible: true,
     anchors,
