@@ -3143,14 +3143,21 @@ function getPoseABC(meta) {
   return [meta.poseABC[0]||0, meta.poseABC[1]||0, meta.poseABC[2]||0];
 }
 
+// Round degree values: snap to integer if within 1e-6, otherwise round to 4 decimals.
+function __snapDeg(v) {
+  const r = Math.round(v);
+  return Math.abs(v - r) < 1e-4 ? r : Math.round(v * 10000) / 10000;
+}
+
 function setPoseABC(meta, abc) {
   if (!meta) return;
+  const s = [__snapDeg(abc[0]), __snapDeg(abc[1]), __snapDeg(abc[2])];
   if (meta.attach) {
     if (!Array.isArray(meta.attach.offset)) meta.attach.offset = [0,0,0,0,0,0];
-    meta.attach.offset[3]=abc[0]; meta.attach.offset[4]=abc[1]; meta.attach.offset[5]=abc[2];
+    meta.attach.offset[3]=s[0]; meta.attach.offset[4]=s[1]; meta.attach.offset[5]=s[2];
   } else {
-    meta.poseABC = [abc[0], abc[1], abc[2]];
-    meta.poseYaw = abc[2];
+    meta.poseABC = [s[0], s[1], s[2]];
+    meta.poseYaw = s[2];
   }
 }
 
@@ -3231,7 +3238,7 @@ function rotateSelected(deg) {
       const qDelta = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1), (deg*Math.PI)/180); // anchor-frame Z
       const qNew = qOff.clone().multiply(qDelta); // post-multiply => rotate in anchor frame
       const rod = window.quaternionToRodriguesDeg ? window.quaternionToRodriguesDeg(qNew) : [0,0,0];
-      meta.attach.offset[3] = rod[0]||0; meta.attach.offset[4] = rod[1]||0; meta.attach.offset[5] = rod[2]||0;
+      meta.attach.offset[3] = __snapDeg(rod[0]||0); meta.attach.offset[4] = __snapDeg(rod[1]||0); meta.attach.offset[5] = __snapDeg(rod[2]||0);
     } catch (e) {
       // fallback to legacy behavior if something goes wrong
       meta.attach.offset[5] = (meta.attach.offset[5] || 0) + deg;
@@ -3318,7 +3325,7 @@ function flipSelected() {
       const qFlip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI); // anchor-frame X
       const qNew = qOff.clone().multiply(qFlip);
       const rod = window.quaternionToRodriguesDeg ? window.quaternionToRodriguesDeg(qNew) : [0,0,0];
-      meta.attach.offset[3] = rod[0]||0; meta.attach.offset[4] = rod[1]||0; meta.attach.offset[5] = rod[2]||0;
+      meta.attach.offset[3] = __snapDeg(rod[0]||0); meta.attach.offset[4] = __snapDeg(rod[1]||0); meta.attach.offset[5] = __snapDeg(rod[2]||0);
     } catch (e) {
       meta.attach.offset[3] = (meta.attach.offset[3] || 0) + 180;
     }
@@ -3402,7 +3409,7 @@ function flipSelectedAxis(axis) {
       const qFlip = new THREE.Quaternion().setFromAxisAngle(axisVec, deg90);
       const qNew = qOff.clone().multiply(qFlip);
       const rod = window.quaternionToRodriguesDeg ? window.quaternionToRodriguesDeg(qNew) : [0,0,0];
-      meta.attach.offset[3] = rod[0]||0; meta.attach.offset[4] = rod[1]||0; meta.attach.offset[5] = rod[2]||0;
+      meta.attach.offset[3] = __snapDeg(rod[0]||0); meta.attach.offset[4] = __snapDeg(rod[1]||0); meta.attach.offset[5] = __snapDeg(rod[2]||0);
     } catch (e) {
       // fallback
       if (axis === "x") meta.attach.offset[3] = (meta.attach.offset[3] || 0) + 90;
@@ -3568,16 +3575,14 @@ function openInsertMenu() {
 
   // Category definitions
   const CATEGORIES = {
-    "Plates":     (t) => t.includes("plate") || t.includes("fixture"),
-    "Adapters":   (t) => t.includes("adapter"),
-    "Grippers":   (t) => t.includes("gripper") || t.includes("grip"),
-    "Robots":     (t) => t === "core" || t.includes("robot") || t.includes("dorna"),
-    "Sensors":    (t) => t.includes("sensor") || t.includes("camera") || t.includes("lidar"),
-    "Tools":      (t) => t.includes("tool") || t.includes("changer") || t.includes("spindle") || t.includes("pen") || t.includes("laser"),
-    "Holders":    (t) => t.includes("holder") || t.includes("rack") || t.includes("mount") || t.includes("stand") || t.includes("bracket"),
-    "Tubes & Pipes": (t) => t.includes("tube") || t.includes("pipe") || t.includes("hose"),
-    "Caps":       (t) => /^cap[_-]/.test(t),
-    "Other":      () => true
+    "Adapters":     (t) => t.includes("adapter"),
+    "Core":         (t) => t === "core" || t.includes("fixture"),
+    "Grippers":     (t) => t.includes("gripper") || t.includes("grip"),
+    "Cap Holders":  (t) => t.includes("capholder"),
+    "Racks":        (t) => t.includes("rack"),
+    "Tubes":        (t) => t.includes("tube") && !t.includes("pipettor"),
+    "Caps":         (t) => /^cap[_-]/.test(t),
+    "Other":        () => true
   };
 
   function categorize(items) {
@@ -4114,55 +4119,113 @@ async function openCreatePanel(typeName) {
   const optsAll = Array.isArray(meta.options) ? meta.options : [];
   // Do not surface internal toggles in the Builder UI.
   // `simulation` is always True; `has_motion_plan` is always True for core.
+  // `has_rail` is replaced by a rail dropdown for core.
   const hiddenOpts = ["simulation"];
-  if (String(typeName || "").toLowerCase() === "core") hiddenOpts.push("has_motion_plan");
+  const isCore = String(typeName || "").toLowerCase() === "core";
+  if (isCore) { hiddenOpts.push("has_motion_plan"); hiddenOpts.push("has_rail"); }
   const opts = optsAll.filter(o => o && o.kind === "bool" && !hiddenOpts.includes(String(o.name || o.key || "")));
-  if (!opts.length) {
+
+  // --- Rail dropdown for core components ---
+  let __railSelect = null;
+  if (isCore) {
+    const railWrap = document.createElement("div");
+    railWrap.style.display = "flex";
+    railWrap.style.alignItems = "center";
+    railWrap.style.justifyContent = "space-between";
+    railWrap.style.gap = "10px";
+    railWrap.style.border = "1px solid rgba(0,0,0,0.08)";
+    railWrap.style.borderRadius = "12px";
+    railWrap.style.padding = "10px 12px";
+    railWrap.style.background = "#fafafa";
+    railWrap.style.gridColumn = "1 / -1";
+
+    const railLab = document.createElement("div");
+    railLab.textContent = "Rail";
+    railLab.style.fontSize = "13px";
+    railLab.style.fontWeight = "650";
+    railLab.style.opacity = "0.9";
+
+    __railSelect = document.createElement("select");
+    __railSelect.style.padding = "6px 10px";
+    __railSelect.style.borderRadius = "10px";
+    __railSelect.style.border = "1px solid rgba(0,0,0,0.12)";
+    __railSelect.style.background = "#fff";
+    __railSelect.style.fontSize = "13px";
+    __railSelect.style.cursor = "pointer";
+
+    // Start with "No Rail" + loading placeholder
+    const noRailOpt = document.createElement("option");
+    noRailOpt.value = "none";
+    noRailOpt.textContent = "No Rail";
+    __railSelect.appendChild(noRailOpt);
+
+    // Fetch available rails from server and populate dropdown
+    (async () => {
+      try {
+        const res = await fetch("/api/rails");
+        const data = await res.json();
+        if (data.ok && Array.isArray(data.rails)) {
+          for (const r of data.rails) {
+            const o = document.createElement("option");
+            o.value = r.type;
+            o.textContent = r.label;
+            __railSelect.appendChild(o);
+          }
+          // Default to No Rail
+        }
+      } catch(e) { console.warn("Failed to fetch rails", e); }
+    })();
+
+    railWrap.appendChild(railLab);
+    railWrap.appendChild(__railSelect);
+    form.appendChild(railWrap);
+  }
+
+  if (!opts.length && !isCore) {
     const none = document.createElement("div");
     none.textContent = "";
     none.style.gridColumn = "1 / -1";
     none.style.opacity = "0.7";
     none.style.fontSize = "13px";
     form.appendChild(none);
-  } else {
-    for (const opt of opts) {
-      const wrap = document.createElement("div");
-      wrap.style.display = "flex";
-      wrap.style.alignItems = "center";
-      wrap.style.justifyContent = "space-between";
-      wrap.style.gap = "10px";
-      wrap.style.border = "1px solid rgba(0,0,0,0.08)";
-      wrap.style.borderRadius = "12px";
-      wrap.style.padding = "10px 12px";
-      wrap.style.background = "#fafafa";
+  }
+  for (const opt of opts) {
+    const wrap = document.createElement("div");
+    wrap.style.display = "flex";
+    wrap.style.alignItems = "center";
+    wrap.style.justifyContent = "space-between";
+    wrap.style.gap = "10px";
+    wrap.style.border = "1px solid rgba(0,0,0,0.08)";
+    wrap.style.borderRadius = "12px";
+    wrap.style.padding = "10px 12px";
+    wrap.style.background = "#fafafa";
 
-      const lab = document.createElement("div");
-      lab.textContent = opt.name;
-      lab.style.fontSize = "13px";
-      lab.style.fontWeight = "650";
-      lab.style.opacity = "0.9";
+    const lab = document.createElement("div");
+    lab.textContent = opt.name;
+    lab.style.fontSize = "13px";
+    lab.style.fontWeight = "650";
+    lab.style.opacity = "0.9";
 
-      let input;
-      if (opt.kind === "bool") {
-        input = document.createElement("input");
-        input.type = "checkbox";
-        input.checked = !!opt.default;
-        input.style.transform = "scale(1.25)";
-      } else {
-        input = document.createElement("input");
-        input.type = "text";
-        input.value = (opt.default === undefined || opt.default === null) ? "" : (typeof opt.default === "object" ? JSON.stringify(opt.default) : String(opt.default));
-        input.style.flex = "1";
-        input.style.padding = "8px 10px";
-        input.style.borderRadius = "10px";
-        input.style.border = "1px solid rgba(0,0,0,0.12)";
-        input.style.background = "#fff";
-      }
-      fields[opt.name] = { opt, input };
-      wrap.appendChild(lab);
-      wrap.appendChild(input);
-      form.appendChild(wrap);
+    let input;
+    if (opt.kind === "bool") {
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = !!opt.default;
+      input.style.transform = "scale(1.25)";
+    } else {
+      input = document.createElement("input");
+      input.type = "text";
+      input.value = (opt.default === undefined || opt.default === null) ? "" : (typeof opt.default === "object" ? JSON.stringify(opt.default) : String(opt.default));
+      input.style.flex = "1";
+      input.style.padding = "8px 10px";
+      input.style.borderRadius = "10px";
+      input.style.border = "1px solid rgba(0,0,0,0.12)";
+      input.style.background = "#fff";
     }
+    fields[opt.name] = { opt, input };
+    wrap.appendChild(lab);
+    wrap.appendChild(input);
+    form.appendChild(wrap);
   }
 
   // --- has_cap checkbox (only for tube types with a matching cap) ---
@@ -4253,6 +4316,22 @@ async function openCreatePanel(typeName) {
     for (const k in fields) {
       const { opt, input } = fields[k];
       if (opt && opt.kind === "bool") optsOut[k] = !!input.checked;
+    }
+    // Rail dropdown -> has_rail + rail_cfg
+    if (__railSelect) {
+      const railVal = __railSelect.value;
+      if (railVal === "none") {
+        optsOut.has_rail = false;
+      } else {
+        optsOut.has_rail = true;
+        optsOut.rail_cfg = {
+          type: railVal, axis: 6, offset: 0,
+          usem: 1, pprm: 4000, tprm: 75,
+          usee: 1, ppre: 4000, tpre: 75,
+          p: 0.01, i: 0.0001, d: 0,
+          duration: 100, threshold: 100
+        };
+      }
     }
     const wantCap = !!(__capCheckbox && __capCheckbox.checked && __capType);
     // Get custom name - pass directly into spawnComponent so it's used from the start
@@ -4797,10 +4876,11 @@ function buildConfigObject() {
     if (!meta) continue;
     const out = { type: meta.type };
 
-	// Core-specific defaults are injected below (simulation, ip, has_motion_plan, etc.).
-    // Copy any additional options captured at create-time
+	// Copy any additional options captured at create-time.
+    // Skip internal builder-only keys that should not appear in config output.
+    const __builderInternalKeys = new Set(["type", "attach", "capParent", "patternParent", "patternMode"]);
     for (const [k, v] of Object.entries(meta)) {
-      if (k === "type" || k === "attach" || k === "capParent") continue;
+      if (__builderInternalKeys.has(k)) continue;
       out[k] = v;
     }
 
@@ -4810,19 +4890,19 @@ function buildConfigObject() {
       const hasCam  = !!out.has_camera;
       const hasTC   = (out.has_tool_changer !== undefined) ? !!out.has_tool_changer : !!out.has_toolchanger;
 
-      // Rebuild `out` with deterministic field order matching expected config format
+      // Rebuild `out` with deterministic field order matching expected config format.
+      // Preserve any extra fields from the original config (ip, camera_serial_number, etc.)
       const ordered = { type: "core" };
       ordered.simulation = true;
       ordered.ip = (out.ip !== undefined && out.ip !== "") ? out.ip : "";
       ordered.has_rail = hasRail;
-      ordered.has_camera = hasCam;
+      ordered.rail_offset = (out.rail_offset !== undefined) ? out.rail_offset : 0;
       ordered.has_tool_changer = hasTC;
       ordered.has_motion_plan = true;
-      // Always include camera_serial_number for manual fill
+      ordered.has_camera = hasCam;
       ordered.camera_serial_number = out.camera_serial_number || "";
       // Rail-dependent fields
       if (hasRail) {
-        ordered.rail_offset = (out.rail_offset !== undefined) ? out.rail_offset : 0;
         ordered.robot_attach = out.robot_attach || {
           rail_carriage_anchor: "hole_1",
           robot_A0_anchor: "hole_0",
@@ -4830,10 +4910,21 @@ function buildConfigObject() {
         };
       }
 
+      // Collect any extra keys from the original that aren't in our ordered set
+      // (e.g. tool_changer, rail_cfg, or future fields from imported configs)
+      const orderedKeys = new Set(Object.keys(ordered));
+      orderedKeys.add("attach"); // handled separately below
+      const extraFields = {};
+      for (const [k, v] of Object.entries(out)) {
+        if (!orderedKeys.has(k) && k !== "robot_attach") extraFields[k] = v;
+      }
+
       // Replace out keys with ordered keys (preserve attach for later)
       const savedAttach = out.attach;
       for (const k of Object.keys(out)) delete out[k];
       Object.assign(out, ordered);
+      // Append extra fields after the ordered ones
+      Object.assign(out, extraFields);
       if (savedAttach) out.attach = savedAttach;
     }
 
@@ -4841,6 +4932,8 @@ function buildConfigObject() {
     if (meta.attach) {
       // Ensure 6DOF offset always exists for consistency
       if (!meta.attach.offset) meta.attach.offset = [0,0,0,0,0,0];
+      // Snap offset values to clean integers/decimals
+      meta.attach.offset = meta.attach.offset.map(v => __snapDeg(v));
       out.attach = meta.attach;
     }
 
@@ -4931,34 +5024,302 @@ ensureBuilderBar();
   toggleLabel.style.fontSize = "12px";
   toggleLabel.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, Arial";
 
-  const copyBtn = document.createElement("button");
-  copyBtn.textContent = "Copy";
-  copyBtn.style.padding = "4px 10px";
-  copyBtn.style.borderRadius = "6px";
-  copyBtn.style.border = "1px solid rgba(255,255,255,0.15)";
-  copyBtn.style.background = "rgba(255,255,255,0.08)";
-  copyBtn.style.color = "rgba(255,255,255,0.75)";
-  copyBtn.style.cursor = "pointer";
-  copyBtn.style.fontSize = "11px";
-  copyBtn.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, Arial";
-  copyBtn.addEventListener("mouseenter", () => { copyBtn.style.background = "rgba(255,255,255,0.15)"; });
-  copyBtn.addEventListener("mouseleave", () => { copyBtn.style.background = "rgba(255,255,255,0.08)"; });
+  // --- Icon button helper for config header ---
+  function __mkConfigBtn(svgHTML, tooltip) {
+    const btn = document.createElement("button");
+    btn.innerHTML = svgHTML;
+    btn.title = tooltip;
+    btn.style.padding = "4px";
+    btn.style.width = "28px";
+    btn.style.height = "28px";
+    btn.style.borderRadius = "6px";
+    btn.style.border = "1px solid rgba(255,255,255,0.15)";
+    btn.style.background = "rgba(255,255,255,0.08)";
+    btn.style.color = "rgba(255,255,255,0.75)";
+    btn.style.cursor = "pointer";
+    btn.style.display = "flex";
+    btn.style.alignItems = "center";
+    btn.style.justifyContent = "center";
+    btn.addEventListener("mouseenter", () => { btn.style.background = "rgba(255,255,255,0.15)"; });
+    btn.addEventListener("mouseleave", () => { btn.style.background = "rgba(255,255,255,0.08)"; });
+    return btn;
+  }
+
+  const copySvg = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.75)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+  const copyBtn = __mkConfigBtn(copySvg, "Copy config to clipboard");
   copyBtn.addEventListener("click", () => {
     try {
       const cfg = buildConfigObject();
       const yaml = toYamlString(cfg);
       navigator.clipboard.writeText(yaml).then(() => {
-        copyBtn.textContent = "Copied!";
-        setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+        copyBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+        setTimeout(() => { copyBtn.innerHTML = copySvg; }, 1500);
       });
     } catch(e) {
-      copyBtn.textContent = "Error";
-      setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+      setTimeout(() => { copyBtn.innerHTML = copySvg; }, 1500);
     }
   });
 
+  // --- Load Config button ---
+  const loadSvg = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.75)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>`;
+  const loadBtn = __mkConfigBtn(loadSvg, "Load config from file");
+
+  // Minimal YAML parser for simple config files (flat keys, nested objects, inline arrays)
+  function __parseSimpleYaml(text) {
+    const result = {};
+    const lines = text.split("\n");
+    let currentTop = null;
+    let currentSub = null;
+    for (const raw of lines) {
+      if (!raw.trim() || raw.trim().startsWith("#")) continue;
+      const indent = raw.search(/\S/);
+      const line = raw.trim();
+      if (indent === 0) {
+        // Top-level key
+        const m = line.match(/^([^:]+):\s*(.*)/);
+        if (!m) continue;
+        const key = m[1].trim();
+        const val = m[2].trim();
+        if (val === "" || val === "|") {
+          result[key] = {};
+          currentTop = key;
+          currentSub = null;
+        } else {
+          result[key] = __parseYamlValue(val);
+          currentTop = null;
+          currentSub = null;
+        }
+      } else if (indent >= 2 && currentTop) {
+        const m = line.match(/^([^:]+):\s*(.*)/);
+        if (!m) continue;
+        const key = m[1].trim();
+        const val = m[2].trim();
+        if (indent >= 4 && currentSub) {
+          // Nested sub-key (e.g. attach.parent_name)
+          if (typeof result[currentTop][currentSub] !== "object" || Array.isArray(result[currentTop][currentSub])) {
+            result[currentTop][currentSub] = {};
+          }
+          result[currentTop][currentSub][key] = __parseYamlValue(val);
+        } else if (val === "" || val === "|") {
+          result[currentTop][key] = {};
+          currentSub = key;
+        } else {
+          result[currentTop][key] = __parseYamlValue(val);
+          currentSub = null;
+        }
+      }
+    }
+    return result;
+  }
+
+  function __parseYamlValue(s) {
+    if (s === "true") return true;
+    if (s === "false") return false;
+    if (s === "null" || s === "~") return null;
+    // Inline array: [1, 2, 3] or ["a", "b"]
+    if (s.startsWith("[") && s.endsWith("]")) {
+      try {
+        return JSON.parse(s);
+      } catch(e) {
+        // Try parsing as YAML-style (unquoted strings)
+        const inner = s.slice(1, -1).trim();
+        if (!inner) return [];
+        return inner.split(",").map(v => {
+          v = v.trim();
+          if (v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1);
+          if (v === "true") return true;
+          if (v === "false") return false;
+          if (v === "null") return null;
+          const n = Number(v);
+          return isNaN(n) ? v : n;
+        });
+      }
+    }
+    // Quoted string
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) return s.slice(1, -1);
+    // Number
+    const n = Number(s);
+    if (!isNaN(n) && s !== "") return n;
+    return s;
+  }
+
+  // Clear entire scene
+  function __clearScene() {
+    const names = Object.keys(window.builderState.components || {});
+    for (const name of names) {
+      try { __applyDelete(name); } catch(e) {}
+    }
+    window.builderState.components = {};
+    window.builderState.specs = {};
+    window.builderState.placedOrder = [];
+    window.builderState.lastFixturePlate = null;
+    window.builderState.next = {};
+    window.builderState.selectedName = null;
+    window.builderState.undoStack = [];
+    window.builderState.redoStack = [];
+    try { clearAnchors(); } catch(e) {}
+    try { window.__updateConfigPreview(); } catch(e) {}
+  }
+
+  // Load a parsed config into the scene
+  async function __loadConfigToScene(cfg) {
+    __clearScene();
+    // Small delay to let deletions propagate
+    await new Promise(r => setTimeout(r, 200));
+
+    const allEntries = Object.entries(cfg).filter(([, v]) => v && typeof v === "object" && v.type);
+
+    // Topological sort: parents must be spawned and attached before children.
+    // Build dependency graph from attach.parent_name references.
+    const cfgMap = new Map(allEntries);
+    const sorted = [];
+    const visited = new Set();
+    function visit(name) {
+      if (visited.has(name)) return;
+      visited.add(name);
+      const val = cfgMap.get(name);
+      if (!val) return;
+      // Visit parent first if it exists in the config
+      const parentRef = val.attach?.parent_name;
+      if (parentRef && cfgMap.has(parentRef)) visit(parentRef);
+      sorted.push([name, val]);
+    }
+    for (const [name] of allEntries) visit(name);
+
+    // Spawn and attach in dependency order, using config names directly.
+    // We use the config name as the spawned name so parent_name references resolve.
+    for (const [cfgName, cfgVal] of sorted) {
+      const type = cfgVal.type;
+      const options = {};
+      for (const [k, v] of Object.entries(cfgVal)) {
+        if (k === "type" || k === "attach") continue;
+        options[k] = v;
+      }
+
+      // Spawn the component
+      let spawnedName;
+      try {
+        spawnedName = await spawnComponentSilent(type, null, Object.keys(options).length ? options : null);
+      } catch(e) {
+        console.warn("loadConfig: failed to spawn", cfgName, e);
+        continue;
+      }
+
+      // Rename the spawned object to match the config name so later
+      // parent_name references resolve correctly.
+      if (spawnedName !== cfgName) {
+        try {
+          // Update the 3D scene object
+          const obj = objectsByName.get(spawnedName);
+          if (obj) {
+            objectsByName.delete(spawnedName);
+            obj.name = cfgName;
+            if (obj.userData) obj.userData.componentName = cfgName;
+            obj.traverse(c => { if (c.userData?.componentName === spawnedName) c.userData.componentName = cfgName; });
+            objectsByName.set(cfgName, obj);
+          }
+          // Update builder state
+          const meta = window.builderState.components[spawnedName];
+          if (meta) {
+            delete window.builderState.components[spawnedName];
+            window.builderState.components[cfgName] = meta;
+          }
+          const spec = window.builderState.specs?.[spawnedName];
+          if (spec) {
+            delete window.builderState.specs[spawnedName];
+            window.builderState.specs[cfgName] = spec;
+          }
+          // Update placed order
+          const idx = (window.builderState.placedOrder || []).indexOf(spawnedName);
+          if (idx >= 0) window.builderState.placedOrder[idx] = cfgName;
+          // Update counter name tracking
+          if (type === "fixture_plate" && window.builderState.lastFixturePlate === spawnedName) {
+            window.builderState.lastFixturePlate = cfgName;
+          }
+          // Update pickable meshes owner references
+          if (obj) {
+            obj.traverse(c => {
+              if (c.isMesh && c.userData) c.userData.ownerName = cfgName;
+            });
+          }
+          // Notify server of rename
+          try { socket.emit("upstream_update", { [spawnedName]: { delete: true } }); } catch(e) {}
+          const curSpec = window.builderState.specs?.[cfgName];
+          if (curSpec) {
+            try { socket.emit("upstream_update", { [cfgName]: curSpec }); } catch(e) {}
+          }
+        } catch(e) {
+          console.warn("loadConfig: rename failed", spawnedName, "->", cfgName, e);
+        }
+      }
+
+      // Wait for mesh to load before attaching
+      if (cfgVal.attach) {
+        const t0 = performance.now();
+        while (performance.now() - t0 < 3000) {
+          const obj = objectsByName.get(cfgName);
+          if (obj && obj.children && obj.children.length) break;
+          await new Promise(r => requestAnimationFrame(r));
+        }
+
+        const att = cfgVal.attach;
+        const parentName = att.parent_name;
+        if (parentName && objectsByName.has(parentName)) {
+          try {
+            __snapChildToParentAnchor(
+              cfgName,
+              parentName,
+              att.parent_anchor || "place",
+              att.child_solid || "body",
+              att.child_anchor || "center",
+              att.offset || [0,0,0,0,0,0],
+              att.parent_solid || null
+            );
+          } catch(e) {
+            console.warn("loadConfig: failed to attach", cfgName, "->", parentName, e);
+          }
+        }
+      }
+    }
+
+    try { window.__updateConfigPreview(); } catch(e) {}
+    showToast("Config loaded");
+  }
+
+  // Hidden file input for loading configs
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = ".j2,.yaml,.yml";
+  fileInput.style.display = "none";
+  fileInput.addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const cfg = __parseSimpleYaml(text);
+      if (!cfg || !Object.keys(cfg).length) {
+        showToast("Empty or invalid config file");
+        return;
+      }
+      await __loadConfigToScene(cfg);
+    } catch(err) {
+      console.error("loadConfig error:", err);
+      showToast("Failed to load config: " + (err.message || err));
+    }
+    fileInput.value = "";
+  });
+  document.body.appendChild(fileInput);
+
+  loadBtn.addEventListener("click", () => { fileInput.click(); });
+
+  const btnGroup = document.createElement("div");
+  btnGroup.style.display = "flex";
+  btnGroup.style.gap = "4px";
+  btnGroup.appendChild(loadBtn);
+  btnGroup.appendChild(copyBtn);
+
   toggleBar.appendChild(toggleLabel);
-  toggleBar.appendChild(copyBtn);
+  toggleBar.appendChild(btnGroup);
   viewer.appendChild(toggleBar);
 
   // Code area

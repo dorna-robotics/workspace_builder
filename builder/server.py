@@ -805,6 +805,52 @@ class InstantiateHandler(tornado.web.RequestHandler):
             self.set_status(500)
             self.write({"ok": False, "error": str(e)})
 
+class RailsHandler(tornado.web.RequestHandler):
+    """Detect available rail types by scanning core.py for rail_hd_* references
+       and verifying that a matching GLB model exists."""
+    def get(self):
+        import re
+        rails = []
+        # Scan core component source for rail type strings
+        core_fp = COMPONENT_MAP.get("core")
+        if core_fp and os.path.exists(core_fp):
+            try:
+                src = open(core_fp, "r", encoding="utf-8", errors="ignore").read()
+                # Find all rail_hd_*mm type references
+                found = set(re.findall(r'rail_hd_\d+mm', src))
+                for rail_type in sorted(found):
+                    # Check that the base GLB exists
+                    glb_path = os.path.join(STATIC_DIR, "CAD", f"{rail_type}_base.glb")
+                    if not os.path.exists(glb_path):
+                        continue
+                    # Verify component can instantiate with this rail (has anchors)
+                    try:
+                        bp = instantiate_component_blueprint("core", {
+                            "has_rail": True,
+                            "rail_cfg": {"type": rail_type, "axis": 6, "offset": 0,
+                                         "usem": 1, "pprm": 4000, "tprm": 75,
+                                         "usee": 1, "ppre": 4000, "tpre": 75,
+                                         "p": 0.01, "i": 0.0001, "d": 0,
+                                         "duration": 100, "threshold": 100}
+                        })
+                        has_rail_solid = any(
+                            s.get("solid") == "rail_base" and s.get("anchors")
+                            for s in (bp.get("solids") or [])
+                        )
+                        if not has_rail_solid:
+                            continue
+                    except Exception:
+                        continue
+                    # Extract size label (e.g. "500mm" from "rail_hd_500mm")
+                    size = re.search(r'(\d+mm)', rail_type)
+                    label = size.group(1) if size else rail_type
+                    rails.append({"type": rail_type, "label": label})
+            except Exception as e:
+                self.write({"ok": False, "error": str(e)})
+                return
+        self.write({"ok": True, "rails": rails})
+
+
 class SaveConfigHandler(tornado.web.RequestHandler):
     def set_default_headers(self):
         self.set_header("Access-Control-Allow-Origin", "*")
@@ -845,6 +891,7 @@ app.add_handlers(r".*$", [(r"/save_config", SaveConfigHandler)])
 app.add_handlers(r".*$", [(r"/api/catalog", CatalogHandler)])
 app.add_handlers(r".*$", [(r"/api/type_meta", TypeMetaHandler)])
 app.add_handlers(r".*$", [(r"/api/instantiate", InstantiateHandler)])
+app.add_handlers(r".*$", [(r"/api/rails", RailsHandler)])
 
 world_state = {}
 
