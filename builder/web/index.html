@@ -3173,9 +3173,9 @@ function __propagateAnchoredSubtree(rootName) {
         __snapChildToParentAnchor(
           childName,
           at.parent_name,
-          at.parent_anchor_key || at.parent_anchor,
+          at.parent_anchor,
           at.child_solid,
-          at.child_anchor_key || at.child_anchor,
+          at.child_anchor,
           Array.isArray(at.offset) ? at.offset : [0,0,0,0,0,0],
           at.parent_solid
         );
@@ -3240,9 +3240,9 @@ try {
       __snapChildToParentAnchor(
         name,
         meta.attach.parent_name,
-        meta.attach.parent_anchor_key || meta.attach.parent_anchor,
+        meta.attach.parent_anchor,
         meta.attach.child_solid,
-        meta.attach.child_anchor_key || meta.attach.child_anchor,
+        meta.attach.child_anchor,
         meta.attach.offset,
         meta.attach.parent_solid
       );
@@ -3326,9 +3326,9 @@ try {
       __snapChildToParentAnchor(
         name,
         meta.attach.parent_name,
-        meta.attach.parent_anchor_key || meta.attach.parent_anchor,
+        meta.attach.parent_anchor,
         meta.attach.child_solid,
-        meta.attach.child_anchor_key || meta.attach.child_anchor,
+        meta.attach.child_anchor,
         meta.attach.offset,
         meta.attach.parent_solid
       );
@@ -3413,9 +3413,9 @@ function flipSelectedAxis(axis) {
       __snapChildToParentAnchor(
         name,
         meta.attach.parent_name,
-        meta.attach.parent_anchor_key || meta.attach.parent_anchor,
+        meta.attach.parent_anchor,
         meta.attach.child_solid,
-        meta.attach.child_anchor_key || meta.attach.child_anchor,
+        meta.attach.child_anchor,
         meta.attach.offset,
         meta.attach.parent_solid
       );
@@ -4278,8 +4278,8 @@ async function openCreatePanel(typeName) {
           // Store attach metadata
           const capAttach = {
             parent_name: tubeName, parent_solid: "body", parent_anchor: "place",
-            parent_anchor_key: "place", child_solid: "body", child_anchor: "center",
-            child_anchor_key: "center", offset: [0,0,0,0,0,0]
+            child_solid: "body", child_anchor: "center",
+            offset: [0,0,0,0,0,0]
           };
           window.builderState.components[capName] = Object.assign(
             {}, window.builderState.components[capName] || {}, { attach: capAttach, capParent: tubeName }
@@ -4473,10 +4473,8 @@ async function openCreatePanel(typeName) {
 	    parent_name: ownerName,
 	    parent_solid: __resolveSolidKey(targetObj, __prefParentSolid) || targetObj.userData?.solidName || null,
 	    parent_anchor: anchorName,
-	    parent_anchor_key: anchorName,
 	    child_solid: __resolveSolidKey(childObj, window.builderState.pending.childSolid) || childObj.userData?.solidName || null,
 	    child_anchor: window.builderState.pending.sourceAnchor,
-	    child_anchor_key: window.builderState.pending.sourceAnchor,
 	    offset: [0,0,0,0,0,0]
 	  };
 
@@ -4726,10 +4724,8 @@ function __snapChildToParentAnchor(childName, parentName, parentAnchor, childSol
     parent_name: parentName,
 	    parent_solid: __parentSolidResolved || parentSolid || parentObj.userData?.solidName || null,
     parent_anchor: parentAnchor,
-    parent_anchor_key: __parentAnchorKey,
 	    child_solid: __childSolidResolved || childSolid || childObj.userData?.solidName || null,
     child_anchor: childAnchor,
-    child_anchor_key: __childAnchorKey,
     offset: Array.isArray(offsetArr) ? offsetArr.slice(0,6) : [0,0,0,0,0,0]
   };
 
@@ -6293,7 +6289,7 @@ function startRectPattern() {
           if (!actualKey) continue;
           // Don't create a duplicate on the seed's own anchor.
           try {
-            const seedPA = seedAttachToTarget?.parent_anchor_key || seedAttachToTarget?.parent_anchor || null;
+            const seedPA = seedAttachToTarget?.parent_anchor || null;
             const seedCanon = __canonGridKey(seedPA);
             if (seedCanon && __canonGridKey(parentAnchor) === seedCanon) continue;
           } catch(e) {}
@@ -6371,10 +6367,8 @@ function startRectPattern() {
               const capAttach = {
                 parent_name: tubeCloneName, parent_solid: __pSolid,
                 parent_anchor: __pAnchor,
-                parent_anchor_key: capChild.attach.parent_anchor_key || __pAnchor,
                 child_solid: __cSolid,
                 child_anchor: __cAnchor,
-                child_anchor_key: capChild.attach.child_anchor_key || __cAnchor,
                 offset: [0,0,0,0,0,0]
               };
               window.builderState.components[capCloneName] = Object.assign(

@@ -184,6 +184,7 @@ def _patch_dorna2_once():
         class _BuilderSolid(orig_solid):
             def __init__(self, *a, **k):
                 passed = k.get("anchors", None)
+                passed_cb = k.get("collision_box", None)
                 super().__init__(*a, **k)
                 _cache_solid_anchors(self, passed)
                 # Also mirror to a conventional attribute if allowed.
@@ -193,18 +194,30 @@ def _patch_dorna2_once():
                         setattr(self, "anchors", passed)
                 except Exception:
                     pass
+                # Store collision_box so Builder can read it back.
+                try:
+                    if passed_cb is not None and not hasattr(self, "collision_box"):
+                        setattr(self, "collision_box", passed_cb)
+                except Exception:
+                    pass
 
         dorna2.Solid = _BuilderSolid
     except Exception:
         # Fallback: Solid might be non-subclassable (C-extension). Wrap it.
         def _SolidFactory(*a, **k):
             passed = k.get("anchors", None)
+            passed_cb = k.get("collision_box", None)
             obj = orig_solid(*a, **k)
             _cache_solid_anchors(obj, passed)
             try:
                 cur = getattr(obj, "anchors", None)
                 if (not isinstance(cur, dict) or not cur) and isinstance(passed, dict):
                     setattr(obj, "anchors", passed)
+            except Exception:
+                pass
+            try:
+                if passed_cb is not None and not hasattr(obj, "collision_box"):
+                    setattr(obj, "collision_box", passed_cb)
             except Exception:
                 pass
             return obj
@@ -442,6 +455,7 @@ def _patch_dorna_for_builder():
         class _BuilderSolid(orig_solid):
             def __init__(self, *a, **k):
                 passed_anchors = k.get("anchors", None)
+                passed_cb = k.get("collision_box", None)
                 super().__init__(*a, **k)
                 # Persist the raw anchors as provided by the component.
                 try:
@@ -454,6 +468,12 @@ def _patch_dorna_for_builder():
                     cur = getattr(self, "anchors", None)
                     if (not isinstance(cur, dict) or not cur) and isinstance(passed_anchors, dict):
                         setattr(self, "anchors", passed_anchors)
+                except Exception:
+                    pass
+                # Store collision_box so Builder can read it back.
+                try:
+                    if passed_cb is not None and not hasattr(self, "collision_box"):
+                        setattr(self, "collision_box", passed_cb)
                 except Exception:
                     pass
 
