@@ -242,15 +242,6 @@
           obj.traverse((o) => {
             if (o?.userData?.__isCollisionGroup) o.visible = showCollisionBoxes;
           });
-          // Standalone collision boxes: toggle pickability with visibility
-          if (obj.userData?.typeName === "collision_box") {
-            obj.traverse((o) => {
-              if (o.isMesh) {
-                if (showCollisionBoxes) pickableMeshes.add(o);
-                else pickableMeshes.delete(o);
-              }
-            });
-          }
         }
       }
 
@@ -2263,7 +2254,12 @@ async function spawnComponentSilent(type, meta=null, options=null, customName=nu
         meshes.push({ meshUrl: s.glb, pose: s.pose || [0,0,0,0,0,0], solidName: s.solid, collisionLocal: s.collisionLocal || [] });
       }
     }
-    if (!meshes.length) meshes = null;
+    if (!meshes.length) {
+      meshes = null;
+      // No solid has a GLB — clear glb so the no-mesh branch in upsertObject handles it
+      const anyGlb = blueprint.solids.some(s => s && s.glb);
+      if (!anyGlb) glb = null;
+    }
     if (!glb) {
       for (const s of blueprint.solids) {
         if (s && s.glb) { glb = s.glb; break; }
@@ -4023,9 +4019,6 @@ function openInsertMenu() {
       if (js && js.ok && Array.isArray(js.items) && js.items.length) items = js.items;
     } catch (e) {}
 
-    // Add client-only tools
-    if (!items.includes("collision_box")) items.push("collision_box");
-
     items = items.slice().sort((a,b) => {
       if (a === "fixture_plate") return -1;
       if (b === "fixture_plate") return 1;
@@ -4036,7 +4029,6 @@ function openInsertMenu() {
       const glb = "/static/CAD/" + type + ".glb";
       const tile = mkTile({ name: type, iconSvg: "", onClick: () => openCreatePanel(type) });
       if (type === "collision_box") {
-        // Red box SVG icon instead of GLB thumbnail
         const iconWrap = document.createElement("div");
         iconWrap.style.cssText = "width:96px;height:96px;border-radius:12px;background:#fff;display:flex;align-items:center;justify-content:center;";
         iconWrap.innerHTML = `<svg width="56" height="56" viewBox="0 0 56 56"><defs><linearGradient id="cbg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ff5555" stop-opacity="0.45"/><stop offset="100%" stop-color="#ff3344" stop-opacity="0.35"/></linearGradient></defs><rect x="8" y="14" width="30" height="30" rx="2" fill="url(#cbg)" stroke="#ff3344" stroke-width="1.5"/><polyline points="8,14 18,6 48,6 38,14" fill="url(#cbg)" stroke="#ff3344" stroke-width="1.5"/><polyline points="38,14 48,6 48,36 38,44" fill="url(#cbg)" stroke="#ff3344" stroke-width="1.5"/><line x1="8" y1="14" x2="38" y2="14" stroke="#ff3344" stroke-width="1" opacity="0.5"/></svg>`;
@@ -5390,42 +5382,35 @@ function __openCollisionBoxPanel() {
   document.body.appendChild(panel);
 }
 
-function __spawnCollisionBox(targetName, anchorName, solidKey, size) {
+async function __spawnCollisionBox(targetName, anchorName, solidKey, size) {
   const [sx, sy, sz] = size;
 
-  if (!window.builderState.next["collision_box"]) window.builderState.next["collision_box"] = 1;
-  let name = `collision_box_${window.builderState.next["collision_box"]++}`;
-  while (window.builderState.components[name] || objectsByName.has(name)) {
-    name = `collision_box_${window.builderState.next["collision_box"]++}`;
+  // Use spawnComponentSilent — goes through /api/instantiate without opening anchor UI
+  const name = await spawnComponentSilent("collision_box", null, { size: [sx, sy, sz] });
+  if (!name) {
+    showToast("Failed to create collision box.");
+    return;
   }
 
-  const spec = {
-    meshUrl: null, meshes: null,
-    collisionLocal: [{ pose: [0, 0, sz / 2, 0, 0, 0], scale: [sx, sy, sz] }],
-    pose: [0, 0, 300, 0, 0, 0],
-    visible: true,
-    anchors: { center: [0, 0, 0, 0, 0, 0] },
-    anchorsBySolid: {},
-    type: "collision_box",
-    componentName: name,
-    solidName: "solid_0"
-  };
-
-  upsertObject(name, spec);
-
-  const obj = objectsByName.get(name);
-  if (obj) {
-    obj.traverse((o) => { if (o?.userData?.__isCollisionGroup) o.visible = showCollisionBoxes; });
-    obj.userData.typeName = "collision_box";
+  // Store size in component config
+  if (window.builderState.components[name]) {
+    window.builderState.components[name].size = [sx, sy, sz];
   }
-
-  window.builderState.components[name] = { type: "collision_box", size: [sx, sy, sz] };
 
   const targetObj = objectsByName.get(targetName);
   const parentSolid = solidKey || targetObj?.userData?.solidName || null;
 
+  // Wait for the object to be ready (collision meshes loaded from /api/instantiate)
+  const t0 = performance.now();
+  while (performance.now() - t0 < 3000) {
+    const o = objectsByName.get(name);
+    if (o && o.children && o.children.length) break;
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  const obj = objectsByName.get(name);
+
   try {
-    __snapChildToParentAnchor(name, targetName, anchorName, null, "center", [0, 0, 0, 0, 0, 0], parentSolid);
+    __snapChildToParentAnchor(name, targetName, anchorName, "body", "center", [0, 0, 0, 0, 0, 0], parentSolid);
   } catch (e) {
     console.warn("collision box snap failed", e);
   }
@@ -5434,20 +5419,24 @@ function __spawnCollisionBox(targetName, anchorName, solidKey, size) {
     parent_name: targetName,
     parent_solid: parentSolid,
     parent_anchor: anchorName,
-    child_solid: null,
+    child_solid: "body",
     child_anchor: "center",
     offset: [0, 0, 0, 0, 0, 0]
   };
-  window.builderState.components[name].attach = attach;
+  if (window.builderState.components[name]) {
+    window.builderState.components[name].attach = attach;
+  }
 
   try {
-    const rod = quaternionToRodriguesDeg(obj.quaternion);
-    socket.emit("upstream_update", {
-      [name]: {
-        pose: [obj.position.x, obj.position.y, obj.position.z, rod[0] || 0, rod[1] || 0, rod[2] || 0],
-        builder: { attach }
-      }
-    });
+    if (obj) {
+      const rod = quaternionToRodriguesDeg(obj.quaternion);
+      socket.emit("upstream_update", {
+        [name]: {
+          pose: [obj.position.x, obj.position.y, obj.position.z, rod[0] || 0, rod[1] || 0, rod[2] || 0],
+          builder: { attach }
+        }
+      });
+    }
   } catch (e) {}
 
   window.builderState.mode = "IDLE";
@@ -5787,43 +5776,11 @@ ensureBuilderBar();
         options[k] = v;
       }
 
-      // Collision box: client-only object, no server instantiation
-      if (type === "collision_box") {
-        try {
-          const sz = cfgVal.size || [100, 100, 100];
-          const [sx, sy, szz] = sz;
-          const spec = {
-            meshUrl: null, meshes: null,
-            collisionLocal: [{ pose: [0, 0, szz / 2, 0, 0, 0], scale: [sx, sy, szz] }],
-            pose: [0, 0, 300, 0, 0, 0],
-            visible: true,
-            anchors: { center: [0, 0, 0, 0, 0, 0] },
-            anchorsBySolid: {},
-            type: "collision_box",
-            componentName: cfgName,
-            solidName: "solid_0"
-          };
-          upsertObject(cfgName, spec);
-          const obj = objectsByName.get(cfgName);
-          if (obj) {
-            obj.traverse((o) => { if (o?.userData?.__isCollisionGroup) o.visible = showCollisionBoxes; });
-            obj.userData.typeName = "collision_box";
-          }
-          window.builderState.components[cfgName] = { type: "collision_box", size: sz };
-          if (!window.builderState.next["collision_box"]) window.builderState.next["collision_box"] = 1;
-          const numMatch = cfgName.match(/_(\d+)$/);
-          if (numMatch) window.builderState.next["collision_box"] = Math.max(window.builderState.next["collision_box"], parseInt(numMatch[1], 10) + 1);
-        } catch(e) {
-          console.warn("loadConfig: failed to create collision_box", cfgName, e);
-          continue;
-        }
-      } else {
-        try {
-          await spawnComponentSilent(type, null, Object.keys(options).length ? options : null, cfgName);
-        } catch(e) {
-          console.warn("loadConfig: failed to spawn", cfgName, e);
-          continue;
-        }
+      try {
+        await spawnComponentSilent(type, null, Object.keys(options).length ? options : null, cfgName);
+      } catch(e) {
+        console.warn("loadConfig: failed to spawn", cfgName, e);
+        continue;
       }
 
       // Wait for mesh to load before attaching
